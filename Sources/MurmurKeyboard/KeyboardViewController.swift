@@ -20,6 +20,7 @@ class KeyboardViewController: UIInputViewController {
 
         viewModel.textDocumentProxy = textDocumentProxy
         viewModel.inputViewController = self
+        viewModel.hasFullAccess = hasFullAccess
 
         SharedDefaults.setKeyboardActive(true)
 
@@ -45,6 +46,7 @@ class KeyboardViewController: UIInputViewController {
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         viewModel.textDocumentProxy = textDocumentProxy
+        viewModel.hasFullAccess = hasFullAccess
         checkForPendingText()
     }
 
@@ -100,6 +102,8 @@ final class KeyboardViewModel: ObservableObject {
     @Published var isCapsLocked = false
     @Published var showNumbers = false
     @Published var showSymbols = false
+    @Published var hasFullAccess = false
+    @Published var handoffError: String?
 
     /// The proxy through which the keyboard inserts/deletes text.
     var textDocumentProxy: UITextDocumentProxy?
@@ -163,8 +167,21 @@ final class KeyboardViewModel: ObservableObject {
     }
 
     func openMurmurForDictation() {
+        guard hasFullAccess else { return }
         SharedDefaults.setDictationRequested(true)
         guard let url = URL(string: "murmur://dictate") else { return }
-        inputViewController?.extensionContext?.open(url, completionHandler: nil)
+        inputViewController?.extensionContext?.open(url) { [weak self] success in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if !success {
+                    SharedDefaults.setDictationRequested(false)
+                    self.handoffError = "Could not open Murmur. Please open the app manually."
+                    // Auto-dismiss error after 3 seconds
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                        self?.handoffError = nil
+                    }
+                }
+            }
+        }
     }
 }

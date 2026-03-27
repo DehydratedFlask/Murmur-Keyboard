@@ -72,9 +72,11 @@ final class TranscriptionService: ObservableObject {
     }
 
     /// Unloads the current model to free memory.
+    /// Waits for any active transcription to finish before unloading.
     func unloadModel() async {
-        // Simply release the WhisperKit instance to free model memory.
-        // WhisperKit will deallocate CoreML models on deinit.
+        while isTranscribing {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
         whisperKit = nil
         currentModelName = nil
         modelState = .unloaded

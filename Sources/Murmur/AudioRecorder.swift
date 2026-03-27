@@ -12,6 +12,7 @@ final class AudioRecorder: ObservableObject {
     @Published private(set) var hasPermission = false
     @Published private(set) var permissionDenied = false
     @Published private(set) var audioLevel: Float = 0.0
+    @Published private(set) var lastInterruptionError: String?
 
     // MARK: - Private Properties
 
@@ -26,6 +27,56 @@ final class AudioRecorder: ObservableObject {
 
     init() {
         checkPermission()
+        observeAudioSessionNotifications()
+    }
+
+    // MARK: - Audio Session Observers
+
+    private nonisolated func observeAudioSessionNotifications() {
+        NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance(),
+            queue: .main
+        ) { [weak self] notification in
+            // Extract sendable values before crossing isolation boundary
+            let typeValue = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
+            Task { @MainActor in
+                self?.handleInterruption(typeValue: typeValue)
+            }
+        }
+        NotificationCenter.default.addObserver(
+            forName: AVAudioSession.routeChangeNotification,
+            object: AVAudioSession.sharedInstance(),
+            queue: .main
+        ) { [weak self] notification in
+            let reasonValue = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
+            Task { @MainActor in
+                self?.handleRouteChange(reasonValue: reasonValue)
+            }
+        }
+    }
+
+    private func handleInterruption(typeValue: UInt?) {
+        guard isRecording else { return }
+        guard let typeValue, let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
+
+        if type == .began {
+            lastInterruptionError = "Recording interrupted (e.g. phone call). Your audio has been saved."
+            stopRecording()
+        }
+    }
+
+    private func handleRouteChange(reasonValue: UInt?) {
+        guard isRecording else { return }
+        guard let reasonValue, let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else { return }
+
+        switch reason {
+        case .oldDeviceUnavailable, .categoryChange:
+            lastInterruptionError = "Audio route changed (device disconnected). Recording stopped."
+            stopRecording()
+        default:
+            break
+        }
     }
 
     // MARK: - Permission
@@ -82,6 +133,7 @@ final class AudioRecorder: ObservableObject {
     /// Starts recording audio. Returns immediately; audio is saved to a temp file.
     func startRecording() throws {
         guard !isRecording else { return }
+        lastInterruptionError = nil
 
         guard hasPermission else {
             throw RecordingError.noPermission
@@ -228,6 +280,7 @@ enum RecordingError: LocalizedError {
     case noPermission
     case formatError
     case engineStartFailed
+    case interrupted(String)
 
     var errorDescription: String? {
         switch self {
@@ -237,6 +290,8 @@ enum RecordingError: LocalizedError {
             return "Failed to configure audio format."
         case .engineStartFailed:
             return "Failed to start the audio engine."
+        case .interrupted(let reason):
+            return reason
         }
     }
 }

@@ -568,8 +568,13 @@ struct ContentView: View {
         Task {
             for _ in 0..<60 {
                 if transcriptionService.modelState == .loaded && recorder.hasPermission { break }
-                try? await Task.sleep(for: .milliseconds(500))
+                do {
+                    try await Task.sleep(for: .milliseconds(500))
+                } catch {
+                    return // CancellationError — bail out
+                }
             }
+            guard !Task.isCancelled else { return }
             guard transcriptionService.modelState == .loaded else {
                 errorMessage = NSLocalizedString("Cannot start dictation: model not loaded.", comment: "Error when dictation attempted before model is ready")
                 return
@@ -603,7 +608,11 @@ struct ContentView: View {
         // Cancel any existing transcription task before starting a new one
         transcriptionTask?.cancel()
         transcriptionTask = Task {
-            defer { transcriptionTask = nil }
+            defer {
+                transcriptionTask = nil
+                isProcessing = false
+                recorder.cleanupRecording()
+            }
             do {
                 let rawText = try await transcriptionService.transcribe(audioURL: audioURL)
                 let cleanedText = TextProcessor.process(rawText)
@@ -620,11 +629,11 @@ struct ContentView: View {
                         try? await Task.sleep(for: .milliseconds(800))
                     }
                 }
+            } catch is CancellationError {
+                // Suppress cancellation — cleanup handled by defer
             } catch {
                 errorMessage = error.localizedDescription
             }
-            isProcessing = false
-            recorder.cleanupRecording()
         }
     }
 }
@@ -666,12 +675,12 @@ struct SettingsView: View {
                             dismiss()
                         }
                     }
-                    .disabled(transcriptionService.modelState == .loading)
+                    .disabled(transcriptionService.modelState == .loading || transcriptionService.isTranscribing)
                 }
 
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Murmur v1.2.0")
+                        Text("Murmur v1.2.1")
                             .font(.headline)
                         Text("On-device speech-to-text powered by WhisperKit.\nNo data leaves your device.")
                             .font(.caption)

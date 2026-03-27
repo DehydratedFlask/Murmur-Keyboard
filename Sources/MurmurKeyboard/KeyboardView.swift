@@ -47,6 +47,28 @@ struct KeyboardView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // Handoff error banner
+            if let error = viewModel.handoffError {
+                Text(error)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 4)
+                    .frame(maxWidth: .infinity)
+                    .background(Color.red.opacity(0.85))
+            }
+
+            // Full Access required banner
+            if !viewModel.hasFullAccess {
+                Text("Enable Full Access in Settings \u{2192} Keyboards to use dictation.")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.orange)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 4)
+                    .frame(maxWidth: .infinity)
+                    .background(keyboardBackground.opacity(0.9))
+            }
+
             if viewModel.showNumbers || viewModel.showSymbols {
                 numbersOrSymbolsLayout
             } else {
@@ -254,13 +276,14 @@ struct KeyboardView: View {
             Image(systemName: "mic.fill")
                 .font(.system(size: 18, weight: .medium))
                 .frame(width: 48, height: keyHeight)
-                .background(Color.accentColor)
+                .background(viewModel.hasFullAccess ? Color.accentColor : Color.gray)
                 .cornerRadius(5)
                 .foregroundColor(.white)
                 .shadow(color: Color.accentColor.opacity(0.3), radius: 2, x: 0, y: 1)
         }
+        .disabled(!viewModel.hasFullAccess)
         .accessibilityLabel(NSLocalizedString("Dictate", comment: "Mic button accessibility label"))
-        .accessibilityHint(NSLocalizedString("Double-tap to start voice dictation.", comment: "Mic button accessibility hint"))
+        .accessibilityHint(NSLocalizedString(viewModel.hasFullAccess ? "Double-tap to start voice dictation." : "Full Access required for dictation.", comment: "Mic button accessibility hint"))
     }
 
     private var spaceKey: some View {

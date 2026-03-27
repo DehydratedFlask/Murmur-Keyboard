@@ -28,6 +28,7 @@ final class TranscriptionStore: ObservableObject {
     private(set) var isLoaded = false
 
     private let fileURL: URL
+    private var saveTask: Task<Void, Never>?
 
     init() {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -101,9 +102,10 @@ final class TranscriptionStore: ObservableObject {
     }
 
     private func persist() {
+        saveTask?.cancel()
         let entriesToSave = entries
         let url = fileURL
-        Task {
+        saveTask = Task {
             do {
                 try await Task.detached {
                     let encoder = JSONEncoder()
@@ -112,8 +114,10 @@ final class TranscriptionStore: ObservableObject {
                     try data.write(to: url, options: .atomicWrite)
                 }.value
             } catch {
-                print("[TranscriptionStore] Failed to persist transcriptions: \(error)")
-                self.lastError = error
+                if !(error is CancellationError) {
+                    print("[TranscriptionStore] Failed to persist transcriptions: \(error)")
+                    self.lastError = error
+                }
             }
         }
     }
