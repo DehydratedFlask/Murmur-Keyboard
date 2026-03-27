@@ -108,9 +108,11 @@ final class TranscriptionStore: ObservableObject {
         saveTask = Task {
             do {
                 try await Task.detached {
+                    guard !Task.isCancelled else { return }
                     let encoder = JSONEncoder()
                     encoder.outputFormatting = .prettyPrinted
                     let data = try encoder.encode(entriesToSave)
+                    guard !Task.isCancelled else { return }
                     try data.write(to: url, options: .atomicWrite)
                 }.value
             } catch {

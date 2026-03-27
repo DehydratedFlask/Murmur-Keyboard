@@ -6,10 +6,6 @@ struct KeyboardView: View {
 
     @Environment(\.colorScheme) private var envColorScheme
 
-    private var effectiveColorScheme: ColorScheme {
-        envColorScheme
-    }
-
     // MARK: - Layout Constants
 
     private let keySpacing: CGFloat = 6
@@ -318,24 +314,24 @@ struct KeyboardView: View {
     // MARK: - Colors
 
     private var keyboardBackground: Color {
-        effectiveColorScheme == .dark
+        envColorScheme == .dark
             ? Color(red: 0.11, green: 0.11, blue: 0.12)
             : Color(red: 0.82, green: 0.84, blue: 0.86)
     }
 
     private var keyColor: Color {
-        effectiveColorScheme == .dark
+        envColorScheme == .dark
             ? Color(red: 0.35, green: 0.35, blue: 0.37)
             : .white
     }
 
     private var specialKeyColor: Color {
-        effectiveColorScheme == .dark
+        envColorScheme == .dark
             ? Color(red: 0.24, green: 0.24, blue: 0.26)
             : Color(red: 0.68, green: 0.71, blue: 0.74)
     }
 
     private var keyTextColor: Color {
-        effectiveColorScheme == .dark ? .white : .black
+        envColorScheme == .dark ? .white : .black
     }
 }

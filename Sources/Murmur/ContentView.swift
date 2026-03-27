@@ -131,6 +131,7 @@ struct ContentView: View {
             if shouldStart {
                 appState.shouldStartDictation = false
                 isDictationFromKeyboard = SharedDefaults.consumeDictationRequested()
+                dictationTask?.cancel()
                 dictationTask = handleDictationRequest()
             }
         }
@@ -712,7 +713,7 @@ struct SettingsView: View {
 
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Murmur v1.2.5")
+                        Text("Murmur v1.2.6")
                             .font(.headline)
                         Text("On-device speech-to-text powered by WhisperKit.\nNo data leaves your device.")
                             .font(.caption)

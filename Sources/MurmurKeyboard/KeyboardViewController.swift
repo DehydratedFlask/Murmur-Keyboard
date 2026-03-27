@@ -104,6 +104,7 @@ final class KeyboardViewModel: ObservableObject {
     @Published var showSymbols = false
     @Published var hasFullAccess = false
     @Published var handoffError: String?
+    private var handoffDismissTask: Task<Void, Never>?
 
     /// The proxy through which the keyboard inserts/deletes text.
     var textDocumentProxy: UITextDocumentProxy?
@@ -177,9 +178,12 @@ final class KeyboardViewModel: ObservableObject {
                     SharedDefaults.setDictationRequested(false)
                     self.handoffError = "Could not open Murmur. Please open the app manually."
                     // Auto-dismiss error after 3 seconds
-                    Task { @MainActor in
+                    self.handoffDismissTask?.cancel()
+                    self.handoffDismissTask = Task { @MainActor in
                         try? await Task.sleep(for: .seconds(3))
-                        self.handoffError = nil
+                        if !Task.isCancelled {
+                            self.handoffError = nil
+                        }
                     }
                 }
             }
