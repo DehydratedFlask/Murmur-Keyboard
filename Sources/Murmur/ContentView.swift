@@ -134,6 +134,11 @@ struct ContentView: View {
                 dictationTask = handleDictationRequest()
             }
         }
+        .onChange(of: recorder.lastInterruptionError) { error in
+            if let error {
+                errorMessage = error
+            }
+        }
         .animation(.easeInOut(duration: 0.3), value: showCopiedToast)
         .animation(.spring(response: 0.3), value: showMenu)
     }
@@ -586,6 +591,7 @@ struct ContentView: View {
         Task {
             for _ in 0..<60 {
                 if transcriptionService.modelState == .loaded && recorder.hasPermission { break }
+                if transcriptionService.modelState.isError { break }
                 do {
                     try await Task.sleep(for: .milliseconds(500))
                 } catch {
@@ -706,7 +712,7 @@ struct SettingsView: View {
 
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Murmur v1.2.4")
+                        Text("Murmur v1.2.5")
                             .font(.headline)
                         Text("On-device speech-to-text powered by WhisperKit.\nNo data leaves your device.")
                             .font(.caption)

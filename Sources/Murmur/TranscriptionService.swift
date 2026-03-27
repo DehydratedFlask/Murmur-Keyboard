@@ -144,6 +144,11 @@ enum ModelLoadState: Equatable {
     case loaded
     case error(String)
 
+    var isError: Bool {
+        if case .error = self { return true }
+        return false
+    }
+
     static func == (lhs: ModelLoadState, rhs: ModelLoadState) -> Bool {
         switch (lhs, rhs) {
         case (.unloaded, .unloaded): return true

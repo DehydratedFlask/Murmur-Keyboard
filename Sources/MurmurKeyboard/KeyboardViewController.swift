@@ -78,7 +78,7 @@ class KeyboardViewController: UIInputViewController {
     private func startPendingTextTimer() {
         stopPendingTextTimer()
         pendingTextTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
-            DispatchQueue.main.async {
+            Task { @MainActor in
                 self?.checkForPendingText()
             }
         }
@@ -171,14 +171,15 @@ final class KeyboardViewModel: ObservableObject {
         SharedDefaults.setDictationRequested(true)
         guard let url = URL(string: "murmur://dictate") else { return }
         inputViewController?.extensionContext?.open(url) { [weak self] success in
-            DispatchQueue.main.async {
+            Task { @MainActor in
                 guard let self else { return }
                 if !success {
                     SharedDefaults.setDictationRequested(false)
                     self.handoffError = "Could not open Murmur. Please open the app manually."
                     // Auto-dismiss error after 3 seconds
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
-                        self?.handoffError = nil
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .seconds(3))
+                        self.handoffError = nil
                     }
                 }
             }
