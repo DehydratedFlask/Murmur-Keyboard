@@ -140,6 +140,11 @@ struct ContentView: View {
                 errorMessage = error
             }
         }
+        .onReceive(store.$lastError) { error in
+            if let error {
+                errorMessage = error.localizedDescription
+            }
+        }
         .animation(.easeInOut(duration: 0.3), value: showCopiedToast)
         .animation(.spring(response: 0.3), value: showMenu)
     }
@@ -602,11 +607,13 @@ struct ContentView: View {
             guard !Task.isCancelled else { return }
             guard transcriptionService.modelState == .loaded else {
                 errorMessage = NSLocalizedString("Cannot start dictation: model not loaded.", comment: "Error when dictation attempted before model is ready")
+                isDictationFromKeyboard = false
                 return
             }
             guard recorder.hasPermission else {
                 errorMessage = NSLocalizedString("Cannot start dictation: no microphone permission.", comment: "Error when dictation attempted without mic permission")
                 showMicPermissionAlert = true
+                isDictationFromKeyboard = false
                 return
             }
             startRecording()
@@ -713,7 +720,7 @@ struct SettingsView: View {
 
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Murmur v1.2.6")
+                        Text("Murmur v1.2.7")
                             .font(.headline)
                         Text("On-device speech-to-text powered by WhisperKit.\nNo data leaves your device.")
                             .font(.caption)

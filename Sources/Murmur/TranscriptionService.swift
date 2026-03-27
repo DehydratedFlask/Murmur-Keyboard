@@ -45,6 +45,9 @@ final class TranscriptionService: ObservableObject {
             return
         }
 
+        // Prevent parallel loads
+        guard modelState != .loading else { return }
+
         modelState = .loading
         loadingProgress = "Downloading \(selectedModel.displayName) model..."
 
