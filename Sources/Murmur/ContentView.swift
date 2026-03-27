@@ -177,7 +177,7 @@ struct ContentView: View {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
                     Text(transcriptionService.loadingProgress.isEmpty
-                         ? "Loading model…"
+                         ? NSLocalizedString("Loading model…", comment: "Status bar loading text")
                          : transcriptionService.loadingProgress)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -461,7 +461,7 @@ struct ContentView: View {
                 pulseScale = 1.0
             }
         }
-        .accessibilityLabel(recorder.isRecording ? "Stop recording" : "Start recording")
+        .accessibilityLabel(NSLocalizedString(recorder.isRecording ? "Stop recording" : "Start recording", comment: "Record button accessibility label"))
     }
 
     // MARK: - Copied Toast

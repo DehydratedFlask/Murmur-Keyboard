@@ -183,8 +183,8 @@ struct KeyboardView: View {
                 .foregroundColor(keyTextColor)
                 .shadow(color: .black.opacity(0.15), radius: 0, x: 0, y: 1)
         }
-        .accessibilityLabel(viewModel.isCapsLocked ? "Caps Lock on" : (viewModel.isShifted ? "Shift on" : "Shift"))
-        .accessibilityHint("Double-tap to toggle shift. Double-tap twice for caps lock.")
+        .accessibilityLabel(NSLocalizedString(viewModel.isCapsLocked ? "Caps Lock on" : (viewModel.isShifted ? "Shift on" : "Shift"), comment: "Shift key accessibility label"))
+        .accessibilityHint(NSLocalizedString("Double-tap to toggle shift. Double-tap twice for caps lock.", comment: "Shift key accessibility hint"))
     }
 
     private var backspaceKey: some View {
@@ -199,15 +199,15 @@ struct KeyboardView: View {
                 .foregroundColor(keyTextColor)
                 .shadow(color: .black.opacity(0.15), radius: 0, x: 0, y: 1)
         }
-        .accessibilityLabel("Delete")
-        .accessibilityHint("Double-tap to delete the previous character.")
+        .accessibilityLabel(NSLocalizedString("Delete", comment: "Backspace key accessibility label"))
+        .accessibilityHint(NSLocalizedString("Double-tap to delete the previous character.", comment: "Backspace key accessibility hint"))
     }
 
     private var numberToggleKey: some View {
         Button {
             viewModel.toggleNumbers()
         } label: {
-            Text(viewModel.showNumbers || viewModel.showSymbols ? "ABC" : "123")
+            Text(NSLocalizedString(viewModel.showNumbers || viewModel.showSymbols ? "ABC" : "123", comment: "Toggle key label"))
                 .font(.system(size: 15, weight: .medium))
                 .frame(width: 50, height: keyHeight)
                 .background(specialKeyColor)
@@ -221,7 +221,7 @@ struct KeyboardView: View {
         Button {
             viewModel.toggleSymbols()
         } label: {
-            Text(viewModel.showSymbols ? "123" : "#+=")
+            Text(NSLocalizedString(viewModel.showSymbols ? "123" : "#+=", comment: "Symbol toggle key label"))
                 .font(.system(size: 15, weight: .medium))
                 .frame(width: 42, height: keyHeight)
                 .background(specialKeyColor)
@@ -243,8 +243,8 @@ struct KeyboardView: View {
                 .foregroundColor(keyTextColor)
                 .shadow(color: .black.opacity(0.15), radius: 0, x: 0, y: 1)
         }
-        .accessibilityLabel("Switch keyboard")
-        .accessibilityHint("Double-tap to switch to the next keyboard.")
+        .accessibilityLabel(NSLocalizedString("Switch keyboard", comment: "Globe key accessibility label"))
+        .accessibilityHint(NSLocalizedString("Double-tap to switch to the next keyboard.", comment: "Globe key accessibility hint"))
     }
 
     private var micButton: some View {
@@ -259,8 +259,8 @@ struct KeyboardView: View {
                 .foregroundColor(.white)
                 .shadow(color: Color.accentColor.opacity(0.3), radius: 2, x: 0, y: 1)
         }
-        .accessibilityLabel("Dictate")
-        .accessibilityHint("Double-tap to start voice dictation.")
+        .accessibilityLabel(NSLocalizedString("Dictate", comment: "Mic button accessibility label"))
+        .accessibilityHint(NSLocalizedString("Double-tap to start voice dictation.", comment: "Mic button accessibility hint"))
     }
 
     private var spaceKey: some View {

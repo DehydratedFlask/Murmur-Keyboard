@@ -81,7 +81,7 @@ struct MenuView: View {
         .ignoresSafeArea()
     }
 
-    private func menuItem(icon: String, label: String, dest: MenuDestination) -> some View {
+    private func menuItem(icon: String, label: LocalizedStringKey, dest: MenuDestination) -> some View {
         Button {
             withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
                 isOpen = false
