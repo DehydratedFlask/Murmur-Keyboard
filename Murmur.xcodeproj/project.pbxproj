@@ -21,6 +21,7 @@
 		6DA49FB9CCA842FA4B2688C0 /* MurmurApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED35761EBF7EF881FA0E7BB9 /* MurmurApp.swift */; };
 		C944553A8C6BBDA2511FB912 /* SharedDefaults.swift in Sources */ = {isa = PBXBuildFile; fileRef = C123EC332E2AAB14BB4C3800 /* SharedDefaults.swift */; };
 		CCA6160297EC5A1677B8106D /* WhisperKit in Frameworks */ = {isa = PBXBuildFile; productRef = A2BDAA3B98771B1C1E1439F5 /* WhisperKit */; };
+		D7C4E1F9A8B3E6F2C5A9D1E8 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = E8F2C1D5A7B4E9F6C3A1D8E5 /* Localizable.strings */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -65,6 +66,7 @@
 		E49B8BFD4899D49213E66351 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		ED35761EBF7EF881FA0E7BB9 /* MurmurApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MurmurApp.swift; sourceTree = "<group>"; };
 		FBF74434C602C47E5BAA6CED /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		E8F2C1D5A7B4E9F6C3A1D8E5 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/Localizable.strings; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -126,6 +128,7 @@
 				DD15486FE9E2405472EDB018 /* AudioRecorder.swift */,
 				E49B8BFD4899D49213E66351 /* ContentView.swift */,
 				BA0E563F85E519D1E62A21CB /* Info.plist */,
+				E8F2C1D5A7B4E9F6C3A1D8E5 /* Localizable.strings */,
 				45C181BC358DD79901DD4BE0 /* MenuView.swift */,
 				705220A3846AC6270FEBBC24 /* Murmur.entitlements */,
 				ED35761EBF7EF881FA0E7BB9 /* MurmurApp.swift */,
@@ -227,6 +230,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				4F14AEC41A87ED2E2CDCBC3D /* Assets.xcassets in Resources */,
+				D7C4E1F9A8B3E6F2C5A9D1E8 /* Localizable.strings in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

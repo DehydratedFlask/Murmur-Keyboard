@@ -1,0 +1,82 @@
+/* Localizable.strings — Base English (en)
+   Murmur */
+
+/* ContentView — Header */
+"Murmur" = "Murmur";
+"Buy Me a Coffee" = "Buy Me a Coffee";
+
+/* ContentView — Status Bar */
+"Loading model…" = "Loading model…";
+
+/* ContentView — Stats Section */
+"%@ words" = "%@ words";
+"you've dictated so far." = "you've dictated so far.";
+"Average %lld words per dictation" = "Average %lld words per dictation";
+
+/* ContentView — Empty State */
+"No transcriptions yet" = "No transcriptions yet";
+"Tap the mic to start dictating" = "Tap the mic to start dictating";
+
+/* ContentView — Entry Context Menu */
+"Copy" = "Copy";
+"Share" = "Share";
+"Delete" = "Delete";
+
+/* ContentView — Date Section Headers */
+"Today" = "Today";
+"Yesterday" = "Yesterday";
+
+/* ContentView — Keyboard Setup Banner */
+"Enable Murmur Keyboard" = "Enable Murmur Keyboard";
+"Dictate in any app." = "Dictate in any app.";
+"Set Up" = "Set Up";
+
+/* ContentView — Copied Toast */
+"Copied to clipboard" = "Copied to clipboard";
+
+/* ContentView — Record FAB Accessibility */
+"Stop recording" = "Stop recording";
+"Start recording" = "Start recording";
+
+/* ContentView — Mic Permission Alert */
+"Microphone Access Required" = "Microphone Access Required";
+"Please enable microphone access in Settings to use Murmur." = "Please enable microphone access in Settings to use Murmur.";
+"Open Settings" = "Open Settings";
+"Cancel" = "Cancel";
+
+/* ContentView — Error Messages */
+"No audio was recorded." = "No audio was recorded.";
+"Cannot start dictation: model not loaded." = "Cannot start dictation: model not loaded.";
+"Cannot start dictation: no microphone permission." = "Cannot start dictation: no microphone permission.";
+
+/* SettingsView */
+"Model" = "Model";
+"Whisper Model" = "Whisper Model";
+"Tiny is fastest with slightly lower accuracy. Base is more accurate but uses more memory." = "Tiny is fastest with slightly lower accuracy. Base is more accurate but uses more memory.";
+"Reload Model" = "Reload Model";
+"Murmur v1.2.0" = "Murmur v1.2.0";
+"On-device speech-to-text powered by WhisperKit.\nNo data leaves your device." = "On-device speech-to-text powered by WhisperKit.\nNo data leaves your device.";
+"Settings" = "Settings";
+"Done" = "Done";
+
+/* MenuView */
+"Home" = "Home";
+"History" = "History";
+
+/* KeyboardView — Bottom Row Keys */
+"ABC" = "ABC";
+"123" = "123";
+"#+=" = "#+=";
+"space" = "space";
+"return" = "return";
+
+/* KeyboardView — Accessibility */
+"Caps Lock on" = "Caps Lock on";
+"Shift on" = "Shift on";
+"Shift" = "Shift";
+"Double-tap to toggle shift. Double-tap twice for caps lock." = "Double-tap to toggle shift. Double-tap twice for caps lock.";
+"Double-tap to delete the previous character." = "Double-tap to delete the previous character.";
+"Switch keyboard" = "Switch keyboard";
+"Double-tap to switch to the next keyboard." = "Double-tap to switch to the next keyboard.";
+"Dictate" = "Dictate";
+"Double-tap to start voice dictation." = "Double-tap to start voice dictation.";

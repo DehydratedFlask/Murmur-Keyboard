@@ -7,7 +7,7 @@ enum SharedDefaults {
     // MARK: - App Group
 
     /// The App Group identifier shared between the main app and the keyboard extension.
-    static let appGroupID = "group.com.murmurkeyboard.shared"
+    static let appGroupID = "group.murmurkeyboard.shared"
 
     /// The shared `UserDefaults` suite backed by the App Group container.
     nonisolated(unsafe) static let suite: UserDefaults = {

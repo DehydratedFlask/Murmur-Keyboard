@@ -25,6 +25,8 @@ struct ContentView: View {
     @State private var shareItem: ShareableString?
     @State private var isDictationFromKeyboard = false
     @State private var dictationTask: Task<Void, Never>?
+    @State private var showMicPermissionAlert = false
+    @State private var transcriptionTask: Task<Void, Never>?
 
     // Pulse animation for recording button
     @State private var pulseScale: CGFloat = 1.0
@@ -81,6 +83,16 @@ struct ContentView: View {
         .sheet(item: $shareItem) { item in
             ShareSheet(text: item.text)
         }
+        .alert("Microphone Access Required", isPresented: $showMicPermissionAlert) {
+            Button("Open Settings") {
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Please enable microphone access in Settings to use Murmur.")
+        }
         .task {
             await recorder.requestPermission()
             await transcriptionService.loadModel()
@@ -88,6 +100,7 @@ struct ContentView: View {
         }
         .onDisappear {
             dictationTask?.cancel()
+            transcriptionTask?.cancel()
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
             checkKeyboardEnabled()
@@ -379,9 +392,9 @@ struct ContentView: View {
             let entryDay = cal.startOfDay(for: entry.timestamp)
             let key: String
             if entryDay == today {
-                key = "Today"
+                key = NSLocalizedString("Today", comment: "Section header for today's entries")
             } else if entryDay == yesterday {
-                key = "Yesterday"
+                key = NSLocalizedString("Yesterday", comment: "Section header for yesterday's entries")
             } else {
                 key = dateFormatter.string(from: entry.timestamp)
             }
@@ -512,7 +525,25 @@ struct ContentView: View {
     // MARK: - Helpers
 
     private func checkKeyboardEnabled() {
-        let enabled = SharedDefaults.isKeyboardActive()
+        // Require both: the shared-defaults signal AND the extension appearing
+        // in the system's active input modes (using the safe public API).
+        let flagActive = SharedDefaults.isKeyboardActive()
+        let bundleID = Bundle.main.bundleIdentifier ?? ""
+        let extensionPrefix = bundleID + "."
+        let systemActive = UITextInputMode.activeInputModes.contains { mode in
+            // primaryLanguage for third-party keyboards includes the extension bundle ID prefix
+            guard let lang = mode.primaryLanguage else { return false }
+            return lang.hasPrefix(extensionPrefix) || lang.contains("MurmurKeyboard")
+        }
+
+        let enabled = flagActive && systemActive
+
+        // If the flag is set but the extension is no longer in activeInputModes,
+        // the user has likely disabled the keyboard — reset the flag.
+        if flagActive && !systemActive {
+            SharedDefaults.setKeyboardActive(false)
+        }
+
         withAnimation { keyboardIsEnabled = enabled }
     }
 
@@ -539,8 +570,13 @@ struct ContentView: View {
                 if transcriptionService.modelState == .loaded && recorder.hasPermission { break }
                 try? await Task.sleep(for: .milliseconds(500))
             }
-            guard transcriptionService.modelState == .loaded, recorder.hasPermission else {
-                errorMessage = "Cannot start dictation: model not loaded or no mic permission."
+            guard transcriptionService.modelState == .loaded else {
+                errorMessage = NSLocalizedString("Cannot start dictation: model not loaded.", comment: "Error when dictation attempted before model is ready")
+                return
+            }
+            guard recorder.hasPermission else {
+                errorMessage = NSLocalizedString("Cannot start dictation: no microphone permission.", comment: "Error when dictation attempted without mic permission")
+                showMicPermissionAlert = true
                 return
             }
             startRecording()
@@ -558,13 +594,16 @@ struct ContentView: View {
 
     private func stopAndTranscribe() {
         guard let audioURL = recorder.stopRecording() else {
-            errorMessage = "No audio was recorded."
+            errorMessage = NSLocalizedString("No audio was recorded.", comment: "Error when recording produces no audio")
             return
         }
         isProcessing = true
         errorMessage = nil
 
-        Task {
+        // Cancel any existing transcription task before starting a new one
+        transcriptionTask?.cancel()
+        transcriptionTask = Task {
+            defer { transcriptionTask = nil }
             do {
                 let rawText = try await transcriptionService.transcribe(audioURL: audioURL)
                 let cleanedText = TextProcessor.process(rawText)
@@ -632,7 +671,7 @@ struct SettingsView: View {
 
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Murmur v1.1.0")
+                        Text("Murmur v1.2.0")
                             .font(.headline)
                         Text("On-device speech-to-text powered by WhisperKit.\nNo data leaves your device.")
                             .font(.caption)

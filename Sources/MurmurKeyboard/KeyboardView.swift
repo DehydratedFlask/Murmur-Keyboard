@@ -183,6 +183,8 @@ struct KeyboardView: View {
                 .foregroundColor(keyTextColor)
                 .shadow(color: .black.opacity(0.15), radius: 0, x: 0, y: 1)
         }
+        .accessibilityLabel(viewModel.isCapsLocked ? "Caps Lock on" : (viewModel.isShifted ? "Shift on" : "Shift"))
+        .accessibilityHint("Double-tap to toggle shift. Double-tap twice for caps lock.")
     }
 
     private var backspaceKey: some View {
@@ -197,6 +199,8 @@ struct KeyboardView: View {
                 .foregroundColor(keyTextColor)
                 .shadow(color: .black.opacity(0.15), radius: 0, x: 0, y: 1)
         }
+        .accessibilityLabel("Delete")
+        .accessibilityHint("Double-tap to delete the previous character.")
     }
 
     private var numberToggleKey: some View {
@@ -239,6 +243,8 @@ struct KeyboardView: View {
                 .foregroundColor(keyTextColor)
                 .shadow(color: .black.opacity(0.15), radius: 0, x: 0, y: 1)
         }
+        .accessibilityLabel("Switch keyboard")
+        .accessibilityHint("Double-tap to switch to the next keyboard.")
     }
 
     private var micButton: some View {
@@ -253,6 +259,8 @@ struct KeyboardView: View {
                 .foregroundColor(.white)
                 .shadow(color: Color.accentColor.opacity(0.3), radius: 2, x: 0, y: 1)
         }
+        .accessibilityLabel("Dictate")
+        .accessibilityHint("Double-tap to start voice dictation.")
     }
 
     private var spaceKey: some View {

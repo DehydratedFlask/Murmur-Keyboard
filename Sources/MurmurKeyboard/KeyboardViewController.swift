@@ -63,10 +63,6 @@ class KeyboardViewController: UIInputViewController {
     override func textDidChange(_ textInput: UITextInput?) {
         super.textDidChange(textInput)
         viewModel.textDocumentProxy = textDocumentProxy
-
-        // Update appearance based on color scheme
-        let colorScheme: ColorScheme = textDocumentProxy.keyboardAppearance == .dark ? .dark : .light
-        viewModel.colorScheme = colorScheme
     }
 
     // MARK: - Pending Text Handling
@@ -104,7 +100,6 @@ final class KeyboardViewModel: ObservableObject {
     @Published var isCapsLocked = false
     @Published var showNumbers = false
     @Published var showSymbols = false
-    @Published var colorScheme: ColorScheme = .light
 
     /// The proxy through which the keyboard inserts/deletes text.
     var textDocumentProxy: UITextDocumentProxy?

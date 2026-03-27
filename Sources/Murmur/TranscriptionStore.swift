@@ -24,6 +24,9 @@ final class TranscriptionStore: ObservableObject {
     @Published private(set) var entries: [TranscriptionEntry] = []
     @Published var lastError: Error?
 
+    /// Whether the initial load from disk has completed.
+    private(set) var isLoaded = false
+
     private let fileURL: URL
 
     init() {
@@ -36,17 +39,23 @@ final class TranscriptionStore: ObservableObject {
 
     func save(_ entry: TranscriptionEntry) {
         entries.insert(entry, at: 0)
-        persist()
+        if isLoaded {
+            persist()
+        }
     }
 
     func delete(_ entry: TranscriptionEntry) {
         entries.removeAll { $0.id == entry.id }
-        persist()
+        if isLoaded {
+            persist()
+        }
     }
 
     func delete(at offsets: IndexSet) {
         entries.remove(atOffsets: offsets)
-        persist()
+        if isLoaded {
+            persist()
+        }
     }
 
     func fetchAll() -> [TranscriptionEntry] {
@@ -59,14 +68,7 @@ final class TranscriptionStore: ObservableObject {
         entries.reduce(0) { $0 + $1.wordCount }
     }
 
-    /// Average words per minute: total words / total recording-equivalent minutes.
-    /// We use a proxy of 30 WPM floor per entry if duration is unavailable.
-    /// Since we don't store duration, we compute average WPM as
-    /// totalWords / (count * assumedMinutesPerEntry) where we use 1 min.
-    /// In practice a more useful stat is just totalWords / totalEntries * some factor.
-    /// We'll estimate by assuming average speaking speed is ~130 wpm and back-calculate,
-    /// or simply show (totalWordCount / max(entries.count, 1)) as words per session.
-    /// For display purposes: show total wordCount / estimated minutes (wordCount/130).
+    /// Average words per dictation session.
     var avgWordsPerDictation: Int {
         guard !entries.isEmpty else { return 0 }
         return totalWordCount / entries.count
@@ -83,12 +85,17 @@ final class TranscriptionStore: ObservableObject {
                     let data = try Data(contentsOf: url)
                     return try JSONDecoder().decode([TranscriptionEntry].self, from: data)
                 }.value
-                if !decoded.isEmpty {
-                    entries = decoded.sorted { $0.timestamp > $1.timestamp }
-                }
+
+                // Merge: keep any entries created in-memory before load finished
+                let inMemoryIDs = Set(entries.map { $0.id })
+                let diskOnly = decoded.filter { !inMemoryIDs.contains($0.id) }
+                let merged = (entries + diskOnly).sorted { $0.timestamp > $1.timestamp }
+                entries = merged
+                isLoaded = true
+                persist()
             } catch {
                 print("[TranscriptionStore] Failed to load transcriptions: \(error)")
-                // Keep existing entries rather than resetting to []
+                isLoaded = true
             }
         }
     }
