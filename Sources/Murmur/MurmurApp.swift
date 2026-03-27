@@ -7,6 +7,7 @@ struct MurmurApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .preferredColorScheme(.light)
                 .environmentObject(appState)
                 .onOpenURL { url in
                     if url.scheme == "murmur" && url.host == "dictate" {

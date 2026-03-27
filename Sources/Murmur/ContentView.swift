@@ -5,6 +5,20 @@ import SwiftUI
 private let murmurAccent = Color(red: 0.49, green: 0.36, blue: 0.89)
 private let warmBackground = Color(red: 0.96, green: 0.96, blue: 0.94)
 
+// MARK: - Cached formatters
+
+private let cachedTimeFormatter: DateFormatter = {
+    let f = DateFormatter()
+    f.timeStyle = .short
+    return f
+}()
+
+private let cachedNumberFormatter: NumberFormatter = {
+    let f = NumberFormatter()
+    f.numberStyle = .decimal
+    return f
+}()
+
 // MARK: - ContentView
 
 struct ContentView: View {
@@ -233,9 +247,7 @@ struct ContentView: View {
     }
 
     private func formatNumber(_ n: Int) -> String {
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .decimal
-        return formatter.string(from: NSNumber(value: n)) ?? "\(n)"
+        cachedNumberFormatter.string(from: NSNumber(value: n)) ?? "\(n)"
     }
 
     // MARK: - Transcription List
@@ -415,9 +427,7 @@ struct ContentView: View {
     }
 
     private func timeString(_ date: Date) -> String {
-        let f = DateFormatter()
-        f.timeStyle = .short
-        return f.string(from: date)
+        cachedTimeFormatter.string(from: date)
     }
 
     // MARK: - Floating Record Button
@@ -607,10 +617,13 @@ struct ContentView: View {
 
         // Cancel any existing transcription task before starting a new one
         transcriptionTask?.cancel()
-        transcriptionTask = Task {
+        let task = Task {
             defer {
-                transcriptionTask = nil
-                isProcessing = false
+                // Only clear if this is still the current task
+                if transcriptionTask?.isCancelled != false {
+                    transcriptionTask = nil
+                    isProcessing = false
+                }
                 recorder.cleanupRecording()
             }
             do {
@@ -635,6 +648,7 @@ struct ContentView: View {
                 errorMessage = error.localizedDescription
             }
         }
+        transcriptionTask = task
     }
 }
 
@@ -680,7 +694,7 @@ struct SettingsView: View {
 
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Murmur v1.2.1")
+                        Text("Murmur v1.2.2")
                             .font(.headline)
                         Text("On-device speech-to-text powered by WhisperKit.\nNo data leaves your device.")
                             .font(.caption)

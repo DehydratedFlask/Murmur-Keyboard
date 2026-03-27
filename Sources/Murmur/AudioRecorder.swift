@@ -19,6 +19,8 @@ final class AudioRecorder: ObservableObject {
     private var audioEngine: AVAudioEngine?
     private var audioFile: AVAudioFile?
     private var recordingURL: URL?
+    private nonisolated(unsafe) var interruptionObserver: (any NSObjectProtocol)?
+    private nonisolated(unsafe) var routeChangeObserver: (any NSObjectProtocol)?
 
     /// Target sample rate for WhisperKit (16 kHz)
     private let targetSampleRate: Double = 16000.0
@@ -30,10 +32,19 @@ final class AudioRecorder: ObservableObject {
         observeAudioSessionNotifications()
     }
 
+    deinit {
+        if let token = interruptionObserver {
+            NotificationCenter.default.removeObserver(token)
+        }
+        if let token = routeChangeObserver {
+            NotificationCenter.default.removeObserver(token)
+        }
+    }
+
     // MARK: - Audio Session Observers
 
     private nonisolated func observeAudioSessionNotifications() {
-        NotificationCenter.default.addObserver(
+        let interruptionToken = NotificationCenter.default.addObserver(
             forName: AVAudioSession.interruptionNotification,
             object: AVAudioSession.sharedInstance(),
             queue: .main
@@ -44,7 +55,7 @@ final class AudioRecorder: ObservableObject {
                 self?.handleInterruption(typeValue: typeValue)
             }
         }
-        NotificationCenter.default.addObserver(
+        let routeChangeToken = NotificationCenter.default.addObserver(
             forName: AVAudioSession.routeChangeNotification,
             object: AVAudioSession.sharedInstance(),
             queue: .main
@@ -54,6 +65,8 @@ final class AudioRecorder: ObservableObject {
                 self?.handleRouteChange(reasonValue: reasonValue)
             }
         }
+        self.interruptionObserver = interruptionToken
+        self.routeChangeObserver = routeChangeToken
     }
 
     private func handleInterruption(typeValue: UInt?) {
@@ -63,6 +76,7 @@ final class AudioRecorder: ObservableObject {
         if type == .began {
             lastInterruptionError = "Recording interrupted (e.g. phone call). Your audio has been saved."
             stopRecording()
+            cleanupRecording()
         }
     }
 
@@ -74,6 +88,7 @@ final class AudioRecorder: ObservableObject {
         case .oldDeviceUnavailable, .categoryChange:
             lastInterruptionError = "Audio route changed (device disconnected). Recording stopped."
             stopRecording()
+            cleanupRecording()
         default:
             break
         }
@@ -242,7 +257,9 @@ final class AudioRecorder: ObservableObject {
         // Deactivate audio session
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
 
-        return recordingURL
+        let url = recordingURL
+        recordingURL = nil
+        return url
     }
 
     /// Cleans up any temporary recording files.
