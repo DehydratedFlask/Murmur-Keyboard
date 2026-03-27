@@ -21,6 +21,8 @@ class KeyboardViewController: UIInputViewController {
         viewModel.textDocumentProxy = textDocumentProxy
         viewModel.inputViewController = self
 
+        SharedDefaults.setKeyboardActive(true)
+
         let keyboardView = KeyboardView(viewModel: viewModel)
         let hosting = UIHostingController(rootView: keyboardView)
         hosting.view.translatesAutoresizingMaskIntoConstraints = false
@@ -77,7 +79,7 @@ class KeyboardViewController: UIInputViewController {
 
     private func startPendingTextTimer() {
         stopPendingTextTimer()
-        pendingTextTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        pendingTextTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
             DispatchQueue.main.async {
                 self?.checkForPendingText()
             }
@@ -166,23 +168,8 @@ final class KeyboardViewModel: ObservableObject {
     }
 
     func openMurmurForDictation() {
-        // Set the flag so the keyboard knows to check for text when we return
         SharedDefaults.setDictationRequested(true)
-
-        // Open the main Murmur app via URL scheme
         guard let url = URL(string: "murmur://dictate") else { return }
-
-        // Keyboard extensions must use the responder chain to open URLs.
-        // UIApplication.shared is unavailable in extensions, but we can
-        // walk the responder chain and use the openURL: selector.
-        var responder: UIResponder? = inputViewController
-        let selector = sel_registerName("openURL:")
-        while let r = responder {
-            if r.responds(to: selector) {
-                r.perform(selector, with: url)
-                return
-            }
-            responder = r.next
-        }
+        inputViewController?.extensionContext?.open(url, completionHandler: nil)
     }
 }

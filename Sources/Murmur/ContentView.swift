@@ -1,94 +1,93 @@
 import SwiftUI
 
+// MARK: - Accent colour
+
+private let murmurAccent = Color(red: 0.49, green: 0.36, blue: 0.89)
+private let warmBackground = Color(red: 0.96, green: 0.96, blue: 0.94)
+
+// MARK: - ContentView
+
 struct ContentView: View {
 
     @EnvironmentObject private var appState: AppState
 
     @StateObject private var recorder = AudioRecorder()
     @StateObject private var transcriptionService = TranscriptionService()
+    @StateObject private var store = TranscriptionStore()
 
-    @State private var transcribedText = ""
+    // UI state
     @State private var isProcessing = false
     @State private var errorMessage: String?
     @State private var showSettings = false
-    @State private var showShareSheet = false
+    @State private var showMenu = false
     @State private var showCopiedToast = false
-    @State private var showKeyboardSetup = false
     @State private var keyboardIsEnabled = false
-    /// Whether this session was initiated by the keyboard extension via URL scheme.
+    @State private var shareItem: ShareableString?
     @State private var isDictationFromKeyboard = false
+    @State private var dictationTask: Task<Void, Never>?
+
+    // Pulse animation for recording button
+    @State private var pulseScale: CGFloat = 1.0
 
     var body: some View {
-        NavigationStack {
-            ZStack {
-                Color(.systemBackground)
-                    .ignoresSafeArea()
+        ZStack(alignment: .topLeading) {
+            warmBackground
+                .ignoresSafeArea()
 
-                VStack(spacing: 0) {
-                    // Model loading status
-                    statusBar
+            VStack(spacing: 0) {
+                headerBar
+                statusBar
 
-                    // Keyboard setup prompt
-                    if !keyboardIsEnabled {
-                        keyboardSetupBanner
-                    }
+                if !keyboardIsEnabled {
+                    keyboardSetupBanner
+                }
 
-                    // Scrollable text area
-                    ScrollView {
-                        VStack(spacing: 24) {
-                            transcriptionArea
+                statsSection
 
-                            if !transcribedText.isEmpty {
-                                actionButtons
-                                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                            }
-                        }
-                        .padding(.horizontal, 20)
-                        .padding(.top, 16)
-                        .padding(.bottom, 140)
-                    }
+                transcriptionList
 
-                    Spacer(minLength: 0)
+                Spacer(minLength: 0)
+            }
 
-                    // Big mic button
-                    recordingButton
+            // Floating action button
+            VStack {
+                Spacer()
+                HStack {
+                    Spacer()
+                    recordFAB
+                        .padding(.trailing, 24)
                         .padding(.bottom, 40)
                 }
+            }
 
-                // Copied confirmation
-                if showCopiedToast {
-                    copiedToast
-                        .transition(.move(edge: .top).combined(with: .opacity))
+            // Copied toast
+            if showCopiedToast {
+                copiedToast
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+
+            // Slide-out menu (top layer)
+            MenuView(isOpen: $showMenu) { dest in
+                switch dest {
+                case .home: break
+                case .history: break
+                case .settings: showSettings = true
                 }
             }
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .principal) {
-                    Text("Murmur")
-                        .font(.headline)
-                        .fontWeight(.semibold)
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        showSettings = true
-                    } label: {
-                        Image(systemName: "gearshape")
-                            .font(.body)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .sheet(isPresented: $showSettings) {
-                SettingsView(transcriptionService: transcriptionService)
-            }
-            .sheet(isPresented: $showShareSheet) {
-                ShareSheet(text: transcribedText)
-            }
+        }
+        .sheet(isPresented: $showSettings) {
+            SettingsView(transcriptionService: transcriptionService)
+        }
+        .sheet(item: $shareItem) { item in
+            ShareSheet(text: item.text)
         }
         .task {
             await recorder.requestPermission()
             await transcriptionService.loadModel()
             checkKeyboardEnabled()
+        }
+        .onDisappear {
+            dictationTask?.cancel()
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
             checkKeyboardEnabled()
@@ -96,13 +95,64 @@ struct ContentView: View {
         .onChange(of: appState.shouldStartDictation) { shouldStart in
             if shouldStart {
                 appState.shouldStartDictation = false
-                // Check if this was initiated by the keyboard extension
                 isDictationFromKeyboard = SharedDefaults.consumeDictationRequested()
-                handleDictationRequest()
+                dictationTask = handleDictationRequest()
             }
         }
-        .animation(.easeInOut(duration: 0.3), value: transcribedText.isEmpty)
-        .animation(.spring(response: 0.3), value: showCopiedToast)
+        .animation(.easeInOut(duration: 0.3), value: showCopiedToast)
+        .animation(.spring(response: 0.3), value: showMenu)
+    }
+
+    // MARK: - Header Bar
+
+    private var headerBar: some View {
+        ZStack {
+            // Perfectly centered title
+            HStack(spacing: 8) {
+                Image(systemName: "waveform")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(murmurAccent)
+                Text("Murmur")
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundStyle(.primary)
+            }
+
+            // Left and right items pinned to edges
+            HStack {
+                Button {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                        showMenu.toggle()
+                    }
+                } label: {
+                    Image(systemName: "line.3.horizontal")
+                        .font(.system(size: 20, weight: .medium))
+                        .foregroundStyle(.primary)
+                        .frame(width: 44, height: 44)
+                }
+
+                Spacer()
+
+                Button {
+                    if let url = URL(string: "https://buymeacoffee.com/tgn5dq5j8xs") {
+                        UIApplication.shared.open(url)
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "cup.and.saucer.fill")
+                            .font(.system(size: 14, weight: .medium))
+                        Text("Buy Me a Coffee")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    .foregroundStyle(.black)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(Color.yellow, in: Capsule())
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        .padding(.bottom, 4)
     }
 
     // MARK: - Status Bar
@@ -112,10 +162,9 @@ struct ContentView: View {
             switch transcriptionService.modelState {
             case .loading:
                 HStack(spacing: 8) {
-                    ProgressView()
-                        .controlSize(.small)
+                    ProgressView().controlSize(.small)
                     Text(transcriptionService.loadingProgress.isEmpty
-                         ? "Loading model..."
+                         ? "Loading model…"
                          : transcriptionService.loadingProgress)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -124,11 +173,11 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity)
                 .background(.ultraThinMaterial)
 
-            case .error(let message):
+            case .error(let msg):
                 HStack(spacing: 8) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
-                    Text(message)
+                    Text(msg)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
@@ -144,146 +193,261 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - Transcription Area
+    // MARK: - Stats Section
 
-    private var transcriptionArea: some View {
-        Group {
-            if isProcessing || transcriptionService.isTranscribing {
-                VStack(spacing: 16) {
-                    ProgressView()
-                        .controlSize(.large)
-                    Text("Transcribing...")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, minHeight: 200)
+    private var statsSection: some View {
+        VStack(spacing: 6) {
+            Text("\(formatNumber(store.totalWordCount)) words")
+                .font(.system(size: 28, weight: .bold, design: .rounded))
+                .foregroundStyle(murmurAccent)
 
-            } else if let error = errorMessage {
-                VStack(spacing: 12) {
-                    Image(systemName: "exclamationmark.triangle")
-                        .font(.largeTitle)
-                        .foregroundStyle(.orange)
-                    Text(error)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                }
-                .frame(maxWidth: .infinity, minHeight: 200)
+            Text("you've dictated so far.")
+                .font(.system(size: 14, weight: .regular))
+                .foregroundStyle(.secondary)
 
-            } else if transcribedText.isEmpty {
-                VStack(spacing: 12) {
-                    Image(systemName: "waveform")
-                        .font(.system(size: 40))
-                        .foregroundStyle(.tertiary)
-                    Text("Tap the mic to start dictating")
-                        .font(.subheadline)
-                        .foregroundStyle(.tertiary)
-                }
-                .frame(maxWidth: .infinity, minHeight: 200)
+            Text("Average \(store.avgWordsPerDictation) words per dictation")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.secondary.opacity(0.8))
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 24)
+        .background(
+            RoundedRectangle(cornerRadius: 16)
+                .fill(murmurAccent.opacity(0.06))
+        )
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+    }
 
-            } else {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text(transcribedText)
-                        .font(.body)
-                        .lineSpacing(4)
-                        .textSelection(.enabled)
+    private func formatNumber(_ n: Int) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        return formatter.string(from: NSNumber(value: n)) ?? "\(n)"
+    }
+
+    // MARK: - Transcription List
+
+    private var transcriptionList: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0, pinnedViews: []) {
+                if store.entries.isEmpty {
+                    emptyState
+                } else {
+                    // Show error banner inline if present
+                    if let error = errorMessage {
+                        HStack(spacing: 10) {
+                            Image(systemName: "exclamationmark.triangle")
+                                .foregroundStyle(.orange)
+                            Text(error)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(14)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 12)
+                    }
+
+                    let grouped = groupedEntries()
+                    ForEach(grouped, id: \.0) { group in
+                        sectionHeader(group.0)
+                        ForEach(group.1) { entry in
+                            entryRow(entry)
+                            Divider()
+                                .padding(.leading, 32)
+                        }
+                    }
                 }
-                .padding(16)
-                .background(
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(Color(.secondarySystemBackground))
-                )
             }
+            .padding(.bottom, 120)
         }
     }
 
-    // MARK: - Action Buttons
+    private var emptyState: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "waveform")
+                .font(.system(size: 44))
+                .foregroundStyle(murmurAccent.opacity(0.35))
+            Text("No transcriptions yet")
+                .font(.headline)
+                .foregroundStyle(.secondary)
+            Text("Tap the mic to start dictating")
+                .font(.subheadline)
+                .foregroundStyle(.tertiary)
 
-    private var actionButtons: some View {
-        HStack(spacing: 12) {
+            if let error = errorMessage {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .multilineTextAlignment(.center)
+                    .padding(.top, 4)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 60)
+    }
+
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title.uppercased())
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .kerning(0.8)
+            .padding(.horizontal, 20)
+            .padding(.top, 20)
+            .padding(.bottom, 6)
+    }
+
+    private func entryRow(_ entry: TranscriptionEntry) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Title line - first ~50 chars bold
+            let titleText = String(entry.text.prefix(60)).components(separatedBy: ".").first ?? String(entry.text.prefix(60))
+            Text(titleText)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            Text(timeString(entry.timestamp))
+                .font(.system(size: 12))
+                .foregroundStyle(murmurAccent.opacity(0.6))
+                .padding(.top, 2)
+
+            // Purple accent line
+            Rectangle()
+                .fill(murmurAccent.opacity(0.2))
+                .frame(height: 1)
+                .padding(.vertical, 8)
+
+            // Body text
+            Text(entry.text)
+                .font(.system(size: 15, weight: .regular))
+                .lineSpacing(5)
+                .foregroundStyle(.primary.opacity(0.85))
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.white)
+        )
+        .padding(.horizontal, 16)
+        .padding(.vertical, 4)
+        .contextMenu {
             Button {
-                copyToClipboard()
+                UIPasteboard.general.string = entry.text
+                showCopiedToast = true
+                Task {
+                    try? await Task.sleep(for: .seconds(2))
+                    showCopiedToast = false
+                }
             } label: {
                 Label("Copy", systemImage: "doc.on.doc")
-                    .font(.subheadline.weight(.medium))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
             }
-            .buttonStyle(.bordered)
-            .tint(.primary)
 
             Button {
-                showShareSheet = true
+                shareItem = ShareableString(text: entry.text)
             } label: {
                 Label("Share", systemImage: "square.and.arrow.up")
-                    .font(.subheadline.weight(.medium))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
             }
-            .buttonStyle(.bordered)
-            .tint(.primary)
 
             Button(role: .destructive) {
                 withAnimation {
-                    transcribedText = ""
-                    errorMessage = nil
+                    store.delete(entry)
                 }
             } label: {
-                Label("Clear", systemImage: "trash")
-                    .font(.subheadline.weight(.medium))
-                    .padding(.vertical, 12)
+                Label("Delete", systemImage: "trash")
             }
-            .buttonStyle(.bordered)
-            .tint(.red)
         }
     }
 
-    // MARK: - Recording Button
+    // MARK: - Date grouping helpers
 
-    private var recordingButton: some View {
+    private func groupedEntries() -> [(String, [TranscriptionEntry])] {
+        let cal = Calendar.current
+        let today = cal.startOfDay(for: Date())
+        let yesterday = cal.date(byAdding: .day, value: -1, to: today)!
+
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "MMMM d"
+
+        var groups: [(String, [TranscriptionEntry])] = []
+        var dict: [String: [TranscriptionEntry]] = [:]
+        var order: [String] = []
+
+        for entry in store.entries {
+            let entryDay = cal.startOfDay(for: entry.timestamp)
+            let key: String
+            if entryDay == today {
+                key = "Today"
+            } else if entryDay == yesterday {
+                key = "Yesterday"
+            } else {
+                key = dateFormatter.string(from: entry.timestamp)
+            }
+            if dict[key] == nil {
+                dict[key] = []
+                order.append(key)
+            }
+            dict[key]!.append(entry)
+        }
+
+        for key in order {
+            if let items = dict[key] {
+                groups.append((key, items))
+            }
+        }
+
+        return groups
+    }
+
+    private func timeString(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.timeStyle = .short
+        return f.string(from: date)
+    }
+
+    // MARK: - Floating Record Button
+
+    private var recordFAB: some View {
         Button {
             handleRecordingTap()
         } label: {
             ZStack {
-                // Pulsing rings when recording
                 if recorder.isRecording {
                     Circle()
-                        .stroke(Color.red.opacity(0.3), lineWidth: 3)
-                        .frame(width: 88, height: 88)
-                        .scaleEffect(1.0 + CGFloat(recorder.audioLevel) * 0.4)
-                        .opacity(0.6)
-                        .animation(.easeInOut(duration: 0.15), value: recorder.audioLevel)
-
-                    Circle()
-                        .stroke(Color.red.opacity(0.15), lineWidth: 2)
-                        .frame(width: 100, height: 100)
-                        .scaleEffect(1.0 + CGFloat(recorder.audioLevel) * 0.6)
-                        .opacity(0.4)
-                        .animation(.easeInOut(duration: 0.2), value: recorder.audioLevel)
+                        .fill(murmurAccent.opacity(0.2))
+                        .frame(width: 72, height: 72)
+                        .scaleEffect(pulseScale)
+                        .animation(
+                            .easeInOut(duration: 0.8).repeatForever(autoreverses: true),
+                            value: pulseScale
+                        )
                 }
 
-                // Main circle
                 Circle()
-                    .fill(recorder.isRecording ? Color.red : Color.accentColor)
-                    .frame(width: 72, height: 72)
+                    .fill(recorder.isRecording ? Color.red : murmurAccent)
+                    .frame(width: 56, height: 56)
                     .shadow(
-                        color: (recorder.isRecording ? Color.red : Color.accentColor).opacity(0.3),
-                        radius: 8, y: 4
+                        color: (recorder.isRecording ? Color.red : murmurAccent).opacity(0.4),
+                        radius: 10, y: 4
                     )
 
-                // Mic / stop icon
                 Image(systemName: recorder.isRecording ? "stop.fill" : "mic.fill")
-                    .font(.system(size: 28, weight: .medium))
+                    .font(.system(size: 22, weight: .medium))
                     .foregroundStyle(.white)
                     .contentTransition(.symbolEffect(.replace))
             }
         }
         .disabled(!recorder.hasPermission || transcriptionService.modelState != .loaded || isProcessing)
-        .opacity(
-            (!recorder.hasPermission || transcriptionService.modelState != .loaded || isProcessing)
-                ? 0.5 : 1.0
-        )
+        .opacity((!recorder.hasPermission || transcriptionService.modelState != .loaded || isProcessing) ? 0.5 : 1.0)
+        .onChange(of: recorder.isRecording) { recording in
+            if recording {
+                pulseScale = 1.25
+            } else {
+                pulseScale = 1.0
+            }
+        }
         .accessibilityLabel(recorder.isRecording ? "Stop recording" : "Start recording")
     }
 
@@ -292,8 +456,7 @@ struct ContentView: View {
     private var copiedToast: some View {
         VStack {
             HStack(spacing: 8) {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
                 Text("Copied to clipboard")
                     .font(.subheadline.weight(.medium))
             }
@@ -302,70 +465,64 @@ struct ContentView: View {
             .background(.ultraThinMaterial, in: Capsule())
             .shadow(color: .black.opacity(0.1), radius: 8, y: 4)
             .padding(.top, 60)
-
             Spacer()
         }
+        .frame(maxWidth: .infinity)
     }
 
     // MARK: - Keyboard Setup Banner
 
     private var keyboardSetupBanner: some View {
-        VStack(spacing: 12) {
-            HStack(spacing: 12) {
-                Image(systemName: "keyboard.badge.ellipsis")
-                    .font(.title2)
-                    .foregroundColor(.accentColor)
+        HStack(spacing: 12) {
+            Image(systemName: "keyboard.badge.ellipsis")
+                .font(.title3)
+                .foregroundStyle(murmurAccent)
 
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Enable Murmur Keyboard")
-                        .font(.subheadline.weight(.semibold))
-                    Text("Add Murmur as a keyboard to dictate in any app.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer()
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Enable Murmur Keyboard")
+                    .font(.subheadline.weight(.semibold))
+                Text("Dictate in any app.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
+
+            Spacer()
 
             Button {
                 openKeyboardSettings()
             } label: {
-                Text("Open Keyboard Settings")
-                    .font(.subheadline.weight(.medium))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
+                Text("Set Up")
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(murmurAccent)
+                    .foregroundStyle(.white)
+                    .clipShape(Capsule())
             }
-            .buttonStyle(.borderedProminent)
         }
-        .padding(16)
+        .padding(14)
         .background(
             RoundedRectangle(cornerRadius: 12)
                 .fill(Color(.secondarySystemBackground))
         )
-        .padding(.horizontal, 20)
-        .padding(.top, 12)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 8)
     }
 
-    /// Checks whether the Murmur keyboard extension is currently enabled.
+    // MARK: - Helpers
+
     private func checkKeyboardEnabled() {
-        // UITextInputMode.activeInputModes lists all enabled keyboards.
-        // If our keyboard bundle ID appears, it's enabled.
-        let enabled = UITextInputMode.activeInputModes.contains { mode in
-            mode.value(forKey: "identifier") as? String == "com.murmurkeyboard.app.keyboard"
-        }
-        withAnimation {
-            keyboardIsEnabled = enabled
-        }
+        let enabled = SharedDefaults.isKeyboardActive()
+        withAnimation { keyboardIsEnabled = enabled }
     }
 
-    /// Opens iOS Settings to the keyboard management page.
     private func openKeyboardSettings() {
         if let url = URL(string: UIApplication.openSettingsURLString) {
             UIApplication.shared.open(url)
         }
     }
 
-    // MARK: - Actions
+    // MARK: - Recording Actions
 
     private func handleRecordingTap() {
         if recorder.isRecording {
@@ -375,23 +532,17 @@ struct ContentView: View {
         }
     }
 
-    /// Called when the app receives a murmur://dictate URL scheme request.
-    /// Waits for the model to be ready, then auto-starts recording.
-    private func handleDictationRequest() {
+    @discardableResult
+    private func handleDictationRequest() -> Task<Void, Never> {
         Task {
-            // Wait for model to finish loading if needed (up to 30 seconds)
             for _ in 0..<60 {
-                if transcriptionService.modelState == .loaded && recorder.hasPermission {
-                    break
-                }
+                if transcriptionService.modelState == .loaded && recorder.hasPermission { break }
                 try? await Task.sleep(for: .milliseconds(500))
             }
-
             guard transcriptionService.modelState == .loaded, recorder.hasPermission else {
                 errorMessage = "Cannot start dictation: model not loaded or no mic permission."
                 return
             }
-
             startRecording()
         }
     }
@@ -410,7 +561,6 @@ struct ContentView: View {
             errorMessage = "No audio was recorded."
             return
         }
-
         isProcessing = true
         errorMessage = nil
 
@@ -419,43 +569,32 @@ struct ContentView: View {
                 let rawText = try await transcriptionService.transcribe(audioURL: audioURL)
                 let cleanedText = TextProcessor.process(rawText)
 
-                withAnimation {
-                    if transcribedText.isEmpty {
-                        transcribedText = cleanedText
-                    } else {
-                        transcribedText += " " + cleanedText
+                if !cleanedText.isEmpty {
+                    let entry = TranscriptionEntry(text: cleanedText)
+                    withAnimation {
+                        store.save(entry)
                     }
-                }
 
-                // If this transcription was initiated by the keyboard extension,
-                // save the result to shared storage so the keyboard can insert it.
-                if isDictationFromKeyboard && !cleanedText.isEmpty {
-                    SharedDefaults.setPendingText(cleanedText)
-                    isDictationFromKeyboard = false
-                    // Small delay so the user can see the result, then return
-                    try? await Task.sleep(for: .milliseconds(800))
-                    // Note: There's no reliable API to "return to previous app" from
-                    // a main app. The user will need to manually switch back.
-                    // On iOS 17+, we could potentially use openURL with the source app's
-                    // URL scheme, but keyboard extensions don't have their own scheme.
+                    if isDictationFromKeyboard {
+                        SharedDefaults.setPendingText(cleanedText)
+                        isDictationFromKeyboard = false
+                        try? await Task.sleep(for: .milliseconds(800))
+                    }
                 }
             } catch {
                 errorMessage = error.localizedDescription
             }
-
             isProcessing = false
             recorder.cleanupRecording()
         }
     }
+}
 
-    private func copyToClipboard() {
-        UIPasteboard.general.string = transcribedText
-        showCopiedToast = true
-        Task {
-            try? await Task.sleep(for: .seconds(2))
-            showCopiedToast = false
-        }
-    }
+// MARK: - ShareableString (Identifiable wrapper for sheet)
+
+private struct ShareableString: Identifiable {
+    let id = UUID()
+    let text: String
 }
 
 // MARK: - Settings View
@@ -493,7 +632,7 @@ struct SettingsView: View {
 
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Murmur v1.0")
+                        Text("Murmur v1.1.0")
                             .font(.headline)
                         Text("On-device speech-to-text powered by WhisperKit.\nNo data leaves your device.")
                             .font(.caption)
@@ -517,13 +656,13 @@ struct SettingsView: View {
 
 struct ShareSheet: UIViewControllerRepresentable {
     let text: String
-
     func makeUIViewController(context: Context) -> UIActivityViewController {
         UIActivityViewController(activityItems: [text], applicationActivities: nil)
     }
-
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
+
+// MARK: - Preview
 
 #Preview {
     ContentView()

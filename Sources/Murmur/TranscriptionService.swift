@@ -17,7 +17,17 @@ final class TranscriptionService: ObservableObject {
     @Published private(set) var modelState: ModelLoadState = .unloaded
     @Published private(set) var isTranscribing = false
     @Published private(set) var loadingProgress: String = ""
-    @Published var selectedModel: WhisperModel = .tiny
+    @Published var selectedModel: WhisperModel = {
+        if let raw = UserDefaults.standard.string(forKey: "selectedWhisperModel"),
+           let model = WhisperModel(rawValue: raw) {
+            return model
+        }
+        return .tiny
+    }() {
+        didSet {
+            UserDefaults.standard.set(selectedModel.rawValue, forKey: "selectedWhisperModel")
+        }
+    }
 
     // MARK: - Private Properties
 

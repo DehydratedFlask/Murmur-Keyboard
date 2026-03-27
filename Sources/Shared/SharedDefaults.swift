@@ -12,7 +12,8 @@ enum SharedDefaults {
     /// The shared `UserDefaults` suite backed by the App Group container.
     nonisolated(unsafe) static let suite: UserDefaults = {
         guard let defaults = UserDefaults(suiteName: appGroupID) else {
-            fatalError("Failed to create UserDefaults for App Group: \(appGroupID)")
+            print("[SharedDefaults] WARNING: Failed to create UserDefaults for App Group: \(appGroupID). Falling back to UserDefaults.standard.")
+            return UserDefaults.standard
         }
         return defaults
     }()
@@ -94,5 +95,20 @@ enum SharedDefaults {
             suite.synchronize()
         }
         return requested
+    }
+
+    // MARK: - Keyboard Active Flag
+
+    private static let keyboardActiveKey = "keyboardExtensionActive"
+
+    /// Called by the keyboard extension when it loads, to signal the main app.
+    static func setKeyboardActive(_ active: Bool) {
+        suite.set(active, forKey: keyboardActiveKey)
+        suite.synchronize()
+    }
+
+    /// Returns whether the keyboard extension has been activated at least once.
+    static func isKeyboardActive() -> Bool {
+        suite.bool(forKey: keyboardActiveKey)
     }
 }

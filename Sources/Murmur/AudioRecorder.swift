@@ -81,6 +81,8 @@ final class AudioRecorder: ObservableObject {
 
     /// Starts recording audio. Returns immediately; audio is saved to a temp file.
     func startRecording() throws {
+        guard !isRecording else { return }
+
         guard hasPermission else {
             throw RecordingError.noPermission
         }
@@ -133,6 +135,9 @@ final class AudioRecorder: ObservableObject {
         guard let converter = AVAudioConverter(from: inputFormat, to: outputFormat) else {
             throw RecordingError.formatError
         }
+
+        // Remove any existing tap before installing a new one
+        inputNode.removeTap(onBus: 0)
 
         // Install tap on input node
         inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
