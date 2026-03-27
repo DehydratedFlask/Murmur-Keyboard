@@ -74,8 +74,11 @@ final class TranscriptionService: ObservableObject {
     /// Unloads the current model to free memory.
     /// Waits for any active transcription to finish before unloading.
     func unloadModel() async {
-        while isTranscribing {
+        // Wait up to 10 seconds for any active transcription to finish.
+        var waited = 0
+        while isTranscribing, waited < 100 {
             try? await Task.sleep(for: .milliseconds(100))
+            waited += 1
         }
         whisperKit = nil
         currentModelName = nil

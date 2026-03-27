@@ -19,6 +19,12 @@ private let cachedNumberFormatter: NumberFormatter = {
     return f
 }()
 
+private let cachedSectionDateFormatter: DateFormatter = {
+    let f = DateFormatter()
+    f.dateFormat = DateFormatter.dateFormat(fromTemplate: "MMMMd", options: 0, locale: Locale.current)
+    return f
+}()
+
 // MARK: - ContentView
 
 struct ContentView: View {
@@ -42,6 +48,7 @@ struct ContentView: View {
     @State private var showMicPermissionAlert = false
     @State private var transcriptionTask: Task<Void, Never>?
     @State private var transcriptionTaskID: UInt = 0
+    @State private var toastDismissTask: Task<Void, Never>?
 
     // Pulse animation for recording button
     @State private var pulseScale: CGFloat = 1.0
@@ -363,9 +370,12 @@ struct ContentView: View {
             Button {
                 UIPasteboard.general.string = entry.text
                 showCopiedToast = true
-                Task {
+                toastDismissTask?.cancel()
+                toastDismissTask = Task {
                     try? await Task.sleep(for: .seconds(2))
-                    showCopiedToast = false
+                    if !Task.isCancelled {
+                        showCopiedToast = false
+                    }
                 }
             } label: {
                 Label("Copy", systemImage: "doc.on.doc")
@@ -394,9 +404,6 @@ struct ContentView: View {
         let today = cal.startOfDay(for: Date())
         let yesterday = cal.date(byAdding: .day, value: -1, to: today)!
 
-        let dateFormatter = DateFormatter()
-        dateFormatter.dateFormat = "MMMM d"
-
         var groups: [(String, [TranscriptionEntry])] = []
         var dict: [String: [TranscriptionEntry]] = [:]
         var order: [String] = []
@@ -409,7 +416,7 @@ struct ContentView: View {
             } else if entryDay == yesterday {
                 key = NSLocalizedString("Yesterday", comment: "Section header for yesterday's entries")
             } else {
-                key = dateFormatter.string(from: entry.timestamp)
+                key = cachedSectionDateFormatter.string(from: entry.timestamp)
             }
             if dict[key] == nil {
                 dict[key] = []
@@ -642,13 +649,14 @@ struct ContentView: View {
 
                     if isDictationFromKeyboard {
                         SharedDefaults.setPendingText(cleanedText)
-                        isDictationFromKeyboard = false
                         try? await Task.sleep(for: .milliseconds(800))
                     }
                 }
+                isDictationFromKeyboard = false
             } catch is CancellationError {
-                // Suppress cancellation — cleanup handled by defer
+                isDictationFromKeyboard = false
             } catch {
+                isDictationFromKeyboard = false
                 errorMessage = error.localizedDescription
             }
         }
@@ -698,7 +706,7 @@ struct SettingsView: View {
 
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Murmur v1.2.3")
+                        Text("Murmur v1.2.4")
                             .font(.headline)
                         Text("On-device speech-to-text powered by WhisperKit.\nNo data leaves your device.")
                             .font(.caption)

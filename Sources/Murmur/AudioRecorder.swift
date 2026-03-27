@@ -74,7 +74,7 @@ final class AudioRecorder: ObservableObject {
         guard let typeValue, let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
 
         if type == .began {
-            lastInterruptionError = "Recording interrupted (e.g. phone call). Your audio has been saved."
+            lastInterruptionError = "Recording interrupted (e.g. phone call). Partial audio was discarded."
             stopRecording()
             cleanupRecording()
         }
@@ -86,7 +86,7 @@ final class AudioRecorder: ObservableObject {
 
         switch reason {
         case .oldDeviceUnavailable, .categoryChange:
-            lastInterruptionError = "Audio route changed (device disconnected). Recording stopped."
+            lastInterruptionError = "Audio device disconnected. Partial audio was discarded."
             stopRecording()
             cleanupRecording()
         default:
