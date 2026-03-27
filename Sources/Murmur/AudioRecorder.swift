@@ -258,7 +258,9 @@ final class AudioRecorder: ObservableObject {
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
 
         let url = recordingURL
-        recordingURL = nil
+        // Note: recordingURL is intentionally NOT cleared here.
+        // cleanupRecording() owns deletion + clearing so that
+        // interruption / route-change callers can still remove the temp file.
         return url
     }
 

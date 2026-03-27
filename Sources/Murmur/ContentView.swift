@@ -41,6 +41,7 @@ struct ContentView: View {
     @State private var dictationTask: Task<Void, Never>?
     @State private var showMicPermissionAlert = false
     @State private var transcriptionTask: Task<Void, Never>?
+    @State private var transcriptionTaskID: UInt = 0
 
     // Pulse animation for recording button
     @State private var pulseScale: CGFloat = 1.0
@@ -617,10 +618,13 @@ struct ContentView: View {
 
         // Cancel any existing transcription task before starting a new one
         transcriptionTask?.cancel()
+        transcriptionTaskID &+= 1
+        let myTaskID = transcriptionTaskID
         let task = Task {
             defer {
-                // Only clear if this is still the current task
-                if transcriptionTask?.isCancelled != false {
+                // Only clear if this is still the current task (a newer
+                // stopAndTranscribe hasn't replaced us).
+                if transcriptionTaskID == myTaskID {
                     transcriptionTask = nil
                     isProcessing = false
                 }
@@ -694,7 +698,7 @@ struct SettingsView: View {
 
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Murmur v1.2.2")
+                        Text("Murmur v1.2.3")
                             .font(.headline)
                         Text("On-device speech-to-text powered by WhisperKit.\nNo data leaves your device.")
                             .font(.caption)
