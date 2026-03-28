@@ -30,6 +30,12 @@ Murmur is a custom keyboard that transcribes your speech entirely on-device usin
 
 All processing happens on your device. See our [Privacy Policy](PRIVACY_POLICY.md).
 
+## Support
+
+If you find Murmur useful, consider buying me a coffee!
+
+<a href="https://www.buymeacoffee.com/tgn5dq5j8xs" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" style="height: 60px !important;width: 217px !important;" ></a>
+
 ## License
 
 MIT
