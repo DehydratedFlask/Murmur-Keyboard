@@ -1,24 +1,24 @@
 # Murmur
 
-**On-device voice-to-text keyboard for iOS.**
+**On-device voice-to-text keyboard for iPhone.**
 
-Murmur is a custom keyboard that transcribes your speech entirely on-device using [WhisperKit](https://github.com/argmaxinc/WhisperKit). No data ever leaves your phone.
+Murmur is an iPhone app with a custom keyboard extension that transcribes your speech on-device using [WhisperKit](https://github.com/argmaxinc/WhisperKit). No transcription data leaves your device.
 
 ## Features
 
 - On-device speech-to-text powered by WhisperKit (OpenAI Whisper models)
-- Custom iOS keyboard with built-in dictation button
+- Custom iOS keyboard with built-in dictation handoff
 - Automatic filler word removal (um, uh, you know, etc.)
 - Works in any app — Messages, Notes, Mail, and more
-- No internet required after initial model download
-- No data collection, no accounts, no tracking
+- No internet required after the initial model download
+- No accounts, no analytics, no tracking
 
 ## How It Works
 
 1. Switch to the Murmur keyboard in any text field
-2. Tap the mic button
-3. Speak naturally
-4. Murmur transcribes on-device and inserts the text
+2. Tap the mic button on the Murmur keyboard
+3. Murmur opens the main app to record and transcribe on-device
+4. Return to your original app and the keyboard inserts the result
 
 ## Requirements
 
@@ -28,13 +28,13 @@ Murmur is a custom keyboard that transcribes your speech entirely on-device usin
 
 ## Privacy
 
-All processing happens on your device. See our [Privacy Policy](PRIVACY_POLICY.md).
+All speech processing happens on your device. See [Privacy Policy](PRIVACY_POLICY.md).
 
 ## Support
 
-If you find Murmur useful, consider buying me a coffee!
+If you find Murmur useful, consider buying me a coffee:
 
-<a href="https://www.buymeacoffee.com/tgn5dq5j8xs" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" style="height: 60px !important;width: 217px !important;" ></a>
+- https://www.buymeacoffee.com/tgn5dq5j8xs
 
 ## License
 

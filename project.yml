@@ -36,6 +36,7 @@ targets:
     info:
       path: Sources/Murmur/Info.plist
       properties:
+        CFBundleDisplayName: Murmur
         CFBundleIconName: AppIcon
         CFBundleURLTypes:
           - CFBundleURLName: com.murmurkeyboard.app

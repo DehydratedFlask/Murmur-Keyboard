@@ -2,8 +2,9 @@ import SwiftUI
 
 // MARK: - Accent colour
 
-private let murmurAccent = Color(red: 0.49, green: 0.36, blue: 0.89)
-private let warmBackground = Color(red: 0.96, green: 0.96, blue: 0.94)
+private let murmurAccent = Color(red: 0.39, green: 0.28, blue: 0.95)
+private let murmurAccentSecondary = Color(red: 0.53, green: 0.44, blue: 1.0)
+private let murmurCardShadow = Color.black.opacity(0.08)
 
 // MARK: - Cached formatters
 
@@ -30,6 +31,7 @@ private let cachedSectionDateFormatter: DateFormatter = {
 struct ContentView: View {
 
     @EnvironmentObject private var appState: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @StateObject private var recorder = AudioRecorder()
     @StateObject private var transcriptionService = TranscriptionService()
@@ -54,48 +56,29 @@ struct ContentView: View {
     @State private var pulseScale: CGFloat = 1.0
 
     var body: some View {
-        ZStack(alignment: .topLeading) {
-            warmBackground
+        ZStack(alignment: .top) {
+            Color(.systemGroupedBackground)
                 .ignoresSafeArea()
 
             VStack(spacing: 0) {
                 headerBar
                 statusBar
 
-                if !keyboardIsEnabled {
-                    keyboardSetupBanner
-                }
-
-                statsSection
-
                 transcriptionList
-
-                Spacer(minLength: 0)
             }
 
-            // Floating action button
+            if showCopiedToast {
+                copiedToast
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+
             VStack {
                 Spacer()
                 HStack {
                     Spacer()
                     recordFAB
                         .padding(.trailing, 24)
-                        .padding(.bottom, 40)
-                }
-            }
-
-            // Copied toast
-            if showCopiedToast {
-                copiedToast
-                    .transition(.move(edge: .top).combined(with: .opacity))
-            }
-
-            // Slide-out menu (top layer)
-            MenuView(isOpen: $showMenu) { dest in
-                switch dest {
-                case .home: break
-                case .history: break
-                case .settings: showSettings = true
+                        .padding(.bottom, 34)
                 }
             }
         }
@@ -127,16 +110,16 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
             checkKeyboardEnabled()
         }
-        .onChange(of: appState.shouldStartDictation) { shouldStart in
-            if shouldStart {
+        .onChange(of: appState.shouldStartDictation) {
+            if appState.shouldStartDictation {
                 appState.shouldStartDictation = false
                 isDictationFromKeyboard = SharedDefaults.consumeDictationRequested()
                 dictationTask?.cancel()
                 dictationTask = handleDictationRequest()
             }
         }
-        .onChange(of: recorder.lastInterruptionError) { error in
-            if let error {
+        .onChange(of: recorder.lastInterruptionError) {
+            if let error = recorder.lastInterruptionError {
                 errorMessage = error
             }
         }
@@ -152,53 +135,61 @@ struct ContentView: View {
     // MARK: - Header Bar
 
     private var headerBar: some View {
-        ZStack {
-            // Perfectly centered title
-            HStack(spacing: 8) {
+        HStack(spacing: 16) {
+            Button {
+                showSettings = true
+            } label: {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .frame(width: 44, height: 44)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+                    )
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Open settings")
+
+            Spacer()
+
+            HStack(spacing: 10) {
                 Image(systemName: "waveform")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(murmurAccent)
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(
+                        LinearGradient(
+                            colors: [murmurAccent, murmurAccentSecondary],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
                 Text("Murmur")
-                    .font(.system(size: 22, weight: .bold))
+                    .font(.system(.title3, design: .rounded).weight(.bold))
                     .foregroundStyle(.primary)
             }
 
-            // Left and right items pinned to edges
-            HStack {
-                Button {
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-                        showMenu.toggle()
-                    }
-                } label: {
-                    Image(systemName: "line.3.horizontal")
-                        .font(.system(size: 20, weight: .medium))
-                        .foregroundStyle(.primary)
-                        .frame(width: 44, height: 44)
+            Spacer()
+
+            Button {
+                if let url = URL(string: "https://buymeacoffee.com/tgn5dq5j8xs") {
+                    UIApplication.shared.open(url)
                 }
-
-                Spacer()
-
-                Button {
-                    if let url = URL(string: "https://buymeacoffee.com/tgn5dq5j8xs") {
-                        UIApplication.shared.open(url)
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "cup.and.saucer.fill")
-                            .font(.system(size: 14, weight: .medium))
-                        Text("Buy Me a Coffee")
-                            .font(.system(size: 11, weight: .semibold))
-                    }
+            } label: {
+                Image(systemName: "cup.and.saucer.fill")
+                    .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(.black)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(Color.yellow, in: Capsule())
-                }
+                    .frame(width: 44, height: 44)
+                    .background(Color.yellow.gradient, in: Circle())
+                    .shadow(color: Color.yellow.opacity(0.24), radius: 10, y: 4)
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Buy me a coffee")
         }
-        .padding(.horizontal, 12)
-        .padding(.top, 8)
-        .padding(.bottom, 4)
+        .padding(.horizontal, 20)
+        .padding(.top, 14)
+        .padding(.bottom, 18)
+        .background(Color(.systemGroupedBackground).opacity(0.94))
     }
 
     // MARK: - Status Bar
@@ -207,20 +198,24 @@ struct ContentView: View {
         Group {
             switch transcriptionService.modelState {
             case .loading:
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
+                HStack(spacing: 10) {
+                    ProgressView()
+                        .controlSize(.small)
                     Text(transcriptionService.loadingProgress.isEmpty
                          ? NSLocalizedString("Loading model…", comment: "Status bar loading text")
                          : transcriptionService.loadingProgress)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                .padding(.vertical, 8)
-                .frame(maxWidth: .infinity)
-                .background(.ultraThinMaterial)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .padding(.horizontal, 20)
+                .padding(.bottom, 8)
 
             case .error(let msg):
-                HStack(spacing: 8) {
+                HStack(spacing: 10) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
                     Text(msg)
@@ -228,10 +223,12 @@ struct ContentView: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                .frame(maxWidth: .infinity)
-                .background(.ultraThinMaterial)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .padding(.horizontal, 20)
+                .padding(.bottom, 8)
 
             default:
                 EmptyView()
@@ -242,27 +239,51 @@ struct ContentView: View {
     // MARK: - Stats Section
 
     private var statsSection: some View {
-        VStack(spacing: 6) {
-            Text("\(formatNumber(store.totalWordCount)) words")
-                .font(.system(size: 28, weight: .bold, design: .rounded))
-                .foregroundStyle(murmurAccent)
+        HStack(alignment: .center, spacing: 16) {
+            ZStack {
+                Circle()
+                    .fill(.white.opacity(0.14))
+                    .frame(width: 56, height: 56)
+                Image(systemName: "waveform.badge.magnifyingglass")
+                    .font(.system(size: 24, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.94))
+            }
 
-            Text("you've dictated so far.")
-                .font(.system(size: 14, weight: .regular))
-                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Dictation at a glance")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.84))
+                Text("\(formatNumber(store.totalWordCount)) words")
+                    .font(.system(size: 30, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                Text("Average \(store.avgWordsPerDictation) words per dictation")
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(.white.opacity(0.78))
+                    .lineLimit(2)
+            }
 
-            Text("Average \(store.avgWordsPerDictation) words per dictation")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(.secondary.opacity(0.8))
+            Spacer(minLength: 0)
         }
+        .padding(20)
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 24)
         .background(
-            RoundedRectangle(cornerRadius: 16)
-                .fill(murmurAccent.opacity(0.06))
+            LinearGradient(
+                colors: [murmurAccent, murmurAccentSecondary],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
         )
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(Color.white.opacity(0.16), lineWidth: 1)
+        )
+        .shadow(color: murmurAccent.opacity(0.22), radius: 24, y: 12)
         .padding(.horizontal, 20)
-        .padding(.vertical, 12)
+        .padding(.top, 6)
+        .padding(.bottom, 18)
     }
 
     private func formatNumber(_ n: Int) -> String {
@@ -273,110 +294,185 @@ struct ContentView: View {
 
     private var transcriptionList: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0, pinnedViews: []) {
+            LazyVStack(alignment: .leading, spacing: 18, pinnedViews: []) {
+                if !keyboardIsEnabled {
+                    keyboardSetupBanner
+                        .padding(.top, 2)
+                }
+
+                statsSection
+
                 if store.entries.isEmpty {
                     emptyState
                 } else {
-                    // Show error banner inline if present
                     if let error = errorMessage {
                         HStack(spacing: 10) {
-                            Image(systemName: "exclamationmark.triangle")
+                            Image(systemName: "exclamationmark.triangle.fill")
                                 .foregroundStyle(.orange)
                             Text(error)
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
                         }
-                        .padding(14)
+                        .padding(16)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
-                        .padding(.horizontal, 16)
-                        .padding(.bottom, 12)
+                        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .stroke(Color.orange.opacity(0.18), lineWidth: 1)
+                        )
+                        .padding(.horizontal, 20)
                     }
 
                     let grouped = groupedEntries()
                     ForEach(grouped, id: \.0) { group in
-                        sectionHeader(group.0)
-                        ForEach(group.1) { entry in
-                            entryRow(entry)
-                            Divider()
-                                .padding(.leading, 32)
+                        VStack(alignment: .leading, spacing: 12) {
+                            sectionHeader(group.0)
+                            ForEach(group.1) { entry in
+                                entryRow(entry)
+                            }
                         }
                     }
                 }
             }
-            .padding(.bottom, 120)
+            .padding(.bottom, 128)
         }
+        .scrollIndicators(.hidden)
     }
 
     private var emptyState: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "waveform")
-                .font(.system(size: 44))
-                .foregroundStyle(murmurAccent.opacity(0.35))
-            Text("No transcriptions yet")
-                .font(.headline)
-                .foregroundStyle(.secondary)
-            Text("Tap the mic to start dictating")
-                .font(.subheadline)
-                .foregroundStyle(.tertiary)
+        VStack(spacing: 18) {
+            ZStack {
+                Circle()
+                    .fill(
+                        LinearGradient(
+                            colors: [murmurAccent.opacity(0.16), murmurAccentSecondary.opacity(0.08)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(width: 108, height: 108)
+
+                Circle()
+                    .strokeBorder(Color.white.opacity(0.8), lineWidth: 1)
+                    .frame(width: 108, height: 108)
+
+                Image(systemName: "waveform")
+                    .font(.system(size: 38, weight: .medium))
+                    .foregroundStyle(murmurAccent)
+                    .symbolEffect(.pulse.byLayer, options: .repeating, value: store.entries.isEmpty)
+            }
+
+            VStack(spacing: 8) {
+                Text("Ready when you are")
+                    .font(.title3.weight(.bold))
+                    .foregroundStyle(.primary)
+
+                Text("Tap the mic to capture a thought, a note, or a message. Murmur keeps every transcription tidy and close at hand.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .lineSpacing(4)
+                    .frame(maxWidth: 300)
+            }
 
             if let error = errorMessage {
                 Text(error)
                     .font(.caption)
                     .foregroundStyle(.orange)
                     .multilineTextAlignment(.center)
-                    .padding(.top, 4)
+                    .padding(.top, 2)
             }
         }
         .frame(maxWidth: .infinity)
-        .padding(.top, 60)
+        .padding(.horizontal, 24)
+        .padding(.vertical, 44)
     }
 
     private func sectionHeader(_ title: String) -> some View {
-        Text(title.uppercased())
-            .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(.secondary)
-            .kerning(0.8)
-            .padding(.horizontal, 20)
-            .padding(.top, 20)
-            .padding(.bottom, 6)
+        HStack {
+            Text(title.uppercased())
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .kerning(1.0)
+            Spacer()
+        }
+        .padding(.horizontal, 20)
     }
 
     private func entryRow(_ entry: TranscriptionEntry) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Title line - first ~50 chars bold
-            let titleText = String(entry.text.prefix(60)).components(separatedBy: ".").first ?? String(entry.text.prefix(60))
-            Text(titleText)
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .frame(maxWidth: .infinity, alignment: .leading)
+        let titleText = String(entry.text.prefix(60)).components(separatedBy: ".").first ?? String(entry.text.prefix(60))
 
-            Text(timeString(entry.timestamp))
-                .font(.system(size: 12))
-                .foregroundStyle(murmurAccent.opacity(0.6))
-                .padding(.top, 2)
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(murmurAccent.opacity(0.1))
+                        .frame(width: 40, height: 40)
+                    Image(systemName: "text.quote")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(murmurAccent)
+                }
 
-            // Purple accent line
-            Rectangle()
-                .fill(murmurAccent.opacity(0.2))
-                .frame(height: 1)
-                .padding(.vertical, 8)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(titleText)
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                        .lineLimit(2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
 
-            // Body text
+                    Text(timeString(entry.timestamp))
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Text(entry.text)
-                .font(.system(size: 15, weight: .regular))
+                .font(.subheadline)
                 .lineSpacing(5)
-                .foregroundStyle(.primary.opacity(0.85))
+                .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(16)
-        .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(Color.white)
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(Color.primary.opacity(0.05), lineWidth: 1)
         )
-        .padding(.horizontal, 16)
-        .padding(.vertical, 4)
+        .shadow(color: murmurCardShadow, radius: 16, y: 8)
+        .padding(.horizontal, 20)
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button {
+                shareItem = ShareableString(text: entry.text)
+            } label: {
+                Label("Share", systemImage: "square.and.arrow.up")
+            }
+            .tint(murmurAccent)
+
+            Button(role: .destructive) {
+                withAnimation {
+                    store.delete(entry)
+                }
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+        }
+        .swipeActions(edge: .leading, allowsFullSwipe: true) {
+            Button {
+                UIPasteboard.general.string = entry.text
+                showCopiedToast = true
+                toastDismissTask?.cancel()
+                toastDismissTask = Task {
+                    try? await Task.sleep(for: .seconds(2))
+                    if !Task.isCancelled {
+                        showCopiedToast = false
+                    }
+                }
+            } label: {
+                Label("Copy", systemImage: "doc.on.doc")
+            }
+            .tint(.blue)
+        }
         .contextMenu {
             Button {
                 UIPasteboard.general.string = entry.text
@@ -458,34 +554,52 @@ struct ContentView: View {
             ZStack {
                 if recorder.isRecording {
                     Circle()
-                        .fill(murmurAccent.opacity(0.2))
-                        .frame(width: 72, height: 72)
+                        .fill(murmurAccent.opacity(0.18))
+                        .frame(width: 102, height: 102)
                         .scaleEffect(pulseScale)
+                        .blur(radius: 2)
                         .animation(
-                            .easeInOut(duration: 0.8).repeatForever(autoreverses: true),
+                            reduceMotion
+                            ? .linear(duration: 0.01)
+                            : .easeInOut(duration: 1.05).repeatForever(autoreverses: true),
                             value: pulseScale
                         )
+
+                    Circle()
+                        .stroke(murmurAccent.opacity(0.28), lineWidth: 1.5)
+                        .frame(width: 92, height: 92)
+                        .scaleEffect(pulseScale * 0.98)
+                        .opacity(reduceMotion ? 1 : 0.85)
                 }
 
                 Circle()
-                    .fill(recorder.isRecording ? Color.red : murmurAccent)
-                    .frame(width: 56, height: 56)
+                    .fill(
+                        LinearGradient(
+                            colors: recorder.isRecording
+                                ? [Color.red, Color.red.opacity(0.84)]
+                                : [murmurAccentSecondary, murmurAccent],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(width: 68, height: 68)
                     .shadow(
-                        color: (recorder.isRecording ? Color.red : murmurAccent).opacity(0.4),
-                        radius: 10, y: 4
+                        color: (recorder.isRecording ? Color.red : murmurAccent).opacity(0.38),
+                        radius: recorder.isRecording ? 24 : 18,
+                        y: 10
                     )
 
                 Image(systemName: recorder.isRecording ? "stop.fill" : "mic.fill")
-                    .font(.system(size: 22, weight: .medium))
+                    .font(.system(size: 25, weight: .semibold))
                     .foregroundStyle(.white)
                     .contentTransition(.symbolEffect(.replace))
             }
         }
         .disabled(!recorder.hasPermission || transcriptionService.modelState != .loaded || isProcessing)
-        .opacity((!recorder.hasPermission || transcriptionService.modelState != .loaded || isProcessing) ? 0.5 : 1.0)
-        .onChange(of: recorder.isRecording) { recording in
-            if recording {
-                pulseScale = 1.25
+        .opacity((!recorder.hasPermission || transcriptionService.modelState != .loaded || isProcessing) ? 0.55 : 1.0)
+        .onChange(of: recorder.isRecording) {
+            if recorder.isRecording {
+                pulseScale = 1.18
             } else {
                 pulseScale = 1.0
             }
@@ -498,15 +612,16 @@ struct ContentView: View {
     private var copiedToast: some View {
         VStack {
             HStack(spacing: 8) {
-                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
                 Text("Copied to clipboard")
                     .font(.subheadline.weight(.medium))
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 12)
-            .background(.ultraThinMaterial, in: Capsule())
-            .shadow(color: .black.opacity(0.1), radius: 8, y: 4)
-            .padding(.top, 60)
+            .background(.regularMaterial, in: Capsule())
+            .shadow(color: .black.opacity(0.12), radius: 12, y: 6)
+            .padding(.top, 66)
             Spacer()
         }
         .frame(maxWidth: .infinity)
@@ -515,40 +630,54 @@ struct ContentView: View {
     // MARK: - Keyboard Setup Banner
 
     private var keyboardSetupBanner: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "keyboard.badge.ellipsis")
-                .font(.title3)
-                .foregroundStyle(murmurAccent)
+        HStack(spacing: 14) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(murmurAccent.opacity(0.12))
+                    .frame(width: 48, height: 48)
+                Image(systemName: "keyboard.badge.ellipsis")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(murmurAccent)
+            }
 
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text("Enable Murmur Keyboard")
                     .font(.subheadline.weight(.semibold))
-                Text("Dictate in any app.")
+                    .foregroundStyle(.primary)
+                Text("Use Murmur for fast dictation in any app.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
-            Spacer()
+            Spacer(minLength: 10)
 
             Button {
                 openKeyboardSettings()
             } label: {
                 Text("Set Up")
                     .font(.caption.weight(.semibold))
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(murmurAccent)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(murmurAccent, in: Capsule())
                     .foregroundStyle(.white)
-                    .clipShape(Capsule())
             }
+            .buttonStyle(.plain)
         }
-        .padding(14)
+        .padding(16)
         .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(Color(.secondarySystemBackground))
+            LinearGradient(
+                colors: [Color(.secondarySystemGroupedBackground), Color(.secondarySystemGroupedBackground).opacity(0.94)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            ),
+            in: RoundedRectangle(cornerRadius: 20, style: .continuous)
         )
-        .padding(.horizontal, 16)
-        .padding(.bottom, 8)
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(murmurAccent.opacity(0.12), lineWidth: 1)
+        )
+        .shadow(color: murmurAccent.opacity(0.08), radius: 14, y: 8)
+        .padding(.horizontal, 20)
     }
 
     // MARK: - Helpers
@@ -720,7 +849,7 @@ struct SettingsView: View {
 
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Murmur v1.2.7")
+                        Text("Murmur v1.0")
                             .font(.headline)
                         Text("On-device speech-to-text powered by WhisperKit.\nNo data leaves your device.")
                             .font(.caption)
@@ -737,6 +866,7 @@ struct SettingsView: View {
                 }
             }
         }
+        .tint(murmurAccent)
     }
 }
 

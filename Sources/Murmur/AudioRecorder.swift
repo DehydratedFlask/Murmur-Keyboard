@@ -1,4 +1,4 @@
-import AVFoundation
+@preconcurrency import AVFoundation
 import Foundation
 
 /// Handles audio recording using AVAudioEngine, outputting a 16kHz mono WAV file

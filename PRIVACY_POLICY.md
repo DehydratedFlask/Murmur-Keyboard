@@ -1,41 +1,47 @@
 # Murmur - Privacy Policy
 
-**Last updated:** March 25, 2026
+**Last updated:** March 29, 2026
 
 ## Overview
 
-Murmur is a voice-to-text keyboard app that transcribes speech entirely on-device using Apple's CoreML and the WhisperKit framework. Your privacy is fundamental to how Murmur works.
+Murmur is a voice-to-text iPhone app with a custom keyboard extension. Murmur transcribes speech on-device using Apple's Core ML and the WhisperKit framework. We designed Murmur so your audio and text stay on your device.
 
 ## Data Collection
 
-**Murmur does not collect, store, transmit, or share any personal data.** Specifically:
+**Murmur does not collect, store, sell, transmit, or share personal data.** Specifically:
 
-- **No audio is recorded permanently.** Audio is captured temporarily in memory for transcription and immediately discarded after processing.
-- **No transcription data is sent to any server.** All speech-to-text processing happens on your device using the WhisperKit machine learning model.
-- **No analytics or tracking.** Murmur does not use any analytics frameworks, crash reporting services, or tracking pixels.
-- **No network requests for transcription.** The only network activity is the one-time download of the WhisperKit model on first launch. After that, Murmur works fully offline.
-- **No user accounts.** Murmur does not require sign-up, login, or any form of account creation.
+- **No accounts.** Murmur does not require sign-up, login, or account creation.
+- **No analytics or tracking.** Murmur does not use analytics SDKs, advertising SDKs, trackers, or third-party crash reporting services.
+- **No server-side transcription.** Your speech is processed locally on your device using an on-device Whisper model.
+- **No cloud storage.** Your audio recordings and transcriptions are not uploaded to Murmur servers because Murmur has no servers for your content.
+- **No third-party sharing.** Murmur does not sell, rent, or disclose your audio or transcribed text to third parties.
 
-## Keyboard Extension
+## Microphone Access
+
+Murmur requests microphone permission so you can record speech for transcription inside the app. Audio is used only while you are actively dictating. Audio is processed locally for transcription and is discarded after processing.
+
+## Keyboard Extension and Full Access
 
 Murmur includes a custom keyboard extension. The keyboard extension:
 
 - Does **not** log keystrokes
-- Does **not** transmit any typed or dictated text
-- Uses the App Group shared container solely to pass transcribed text from the main app back to the keyboard — this data is stored temporarily on-device and automatically expires after 60 seconds
-- Requires "Full Access" permission only for the App Group communication between the keyboard and the main app — no network access is used
+- Does **not** transmit typed text or dictated text off-device
+- Uses the App Group shared container only to pass transcribed text from the main app to the keyboard on your device
+- Stores that handoff text temporarily on-device and automatically clears stale handoff data after a short period
+
+Murmur may ask you to enable **Full Access** for the keyboard. This is required for the keyboard extension to communicate with the main app through the shared container and insert the result back into the active text field. Murmur does **not** use Full Access for advertising, analytics, remote processing, or tracking.
+
+## Model Download
+
+On first launch, Murmur may download the selected Whisper model over **HTTPS** so transcription can run fully on-device afterward. This is a one-time model download provided through WhisperKit's model distribution pipeline, which may use Apple-hosted or Hugging Face-hosted content delivery infrastructure. After the model is downloaded, Murmur does not require internet access for transcription.
 
 ## Data Storage
 
-Transcribed text exists only in the app's active memory while you are using it. When you close the app, the text is gone. Murmur does not maintain any database, log files, or persistent storage of your content.
-
-## Third-Party Services
-
-Murmur uses no third-party services, SDKs, or APIs. The WhisperKit model runs locally on your device.
+Murmur keeps recent transcription history on-device so you can view your past dictations in the app. This history stays on your device unless you choose to copy or share text yourself. Murmur does not maintain a remote database of your content.
 
 ## Children's Privacy
 
-Murmur does not collect any data from anyone, including children under 13.
+Murmur does not knowingly collect personal information from anyone, including children under 13.
 
 ## Changes to This Policy
 
@@ -43,4 +49,4 @@ If this policy changes, the updated version will be posted here with a new "Last
 
 ## Contact
 
-If you have questions about this privacy policy, please open an issue on the [Murmur GitHub repository](https://github.com/Johnnywang2001/Murmur).
+If you have questions about this privacy policy, please contact the developer through the support channel listed on the App Store product page.

@@ -15,15 +15,16 @@
 		3FB2E1F1BC1D7801B402C165 /* AudioRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD15486FE9E2405472EDB018 /* AudioRecorder.swift */; };
 		408A877D4281761C34883CB3 /* MenuView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45C181BC358DD79901DD4BE0 /* MenuView.swift */; };
 		421B9904F6646C1B26B88CE8 /* TextProcessor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A7366E26F2E6709D6679C88 /* TextProcessor.swift */; };
+		46322A06F708861182B60115 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = 856CF47B02A85606D9556C99 /* Localizable.strings */; };
 		4F14AEC41A87ED2E2CDCBC3D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = FBF74434C602C47E5BAA6CED /* Assets.xcassets */; };
 		501F131FDE7524B1A74D3824 /* SharedDefaults.swift in Sources */ = {isa = PBXBuildFile; fileRef = C123EC332E2AAB14BB4C3800 /* SharedDefaults.swift */; };
 		59F568EC577699F68FA4AE92 /* TranscriptionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00B3AA754090800C4A190AB /* TranscriptionStore.swift */; };
+		5B214DAB1EF667EA1473632C /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 254C34AE029C127E98D897BF /* PrivacyInfo.xcprivacy */; };
 		6DA49FB9CCA842FA4B2688C0 /* MurmurApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED35761EBF7EF881FA0E7BB9 /* MurmurApp.swift */; };
 		C944553A8C6BBDA2511FB912 /* SharedDefaults.swift in Sources */ = {isa = PBXBuildFile; fileRef = C123EC332E2AAB14BB4C3800 /* SharedDefaults.swift */; };
 		CCA6160297EC5A1677B8106D /* WhisperKit in Frameworks */ = {isa = PBXBuildFile; productRef = A2BDAA3B98771B1C1E1439F5 /* WhisperKit */; };
-		D7C4E1F9A8B3E6F2C5A9D1E8 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = E8F2C1D5A7B4E9F6C3A1D8E5 /* Localizable.strings */; };
-		D4E5F6A7B8C9D0E1F2A3B4C5 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = F1A2B3C4D5E6F7A8B9C0D1E2 /* PrivacyInfo.xcprivacy */; };
-		E5F6A7B8C9D0E1F2A3B4C5D6 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A3B4C5D6E7F8A9B0C1D2E3F4 /* PrivacyInfo.xcprivacy */; };
+		F836AB23661F014B05BA9F2F /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5FBD1FE5F80F062DB789E32A /* OnboardingView.swift */; };
+		F954043D84C1B6C6A40C9BA5 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 4FB598387040EBBE3BF5FF30 /* PrivacyInfo.xcprivacy */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -53,8 +54,12 @@
 /* Begin PBXFileReference section */
 		05AD0D5776C091609CEE64DC /* MurmurKeyboard.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = MurmurKeyboard.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		1A7366E26F2E6709D6679C88 /* TextProcessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextProcessor.swift; sourceTree = "<group>"; };
+		254C34AE029C127E98D897BF /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		3E76F65BA5EB338EDBE2C26B /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/Localizable.strings; sourceTree = "<group>"; };
 		45C181BC358DD79901DD4BE0 /* MenuView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuView.swift; sourceTree = "<group>"; };
 		4613EE0D4740D47B11050CDB /* KeyboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardView.swift; sourceTree = "<group>"; };
+		4FB598387040EBBE3BF5FF30 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		5FBD1FE5F80F062DB789E32A /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
 		705220A3846AC6270FEBBC24 /* Murmur.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Murmur.entitlements; sourceTree = "<group>"; };
 		8D9B6369C3F5E2AFE775F256 /* KeyboardViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardViewController.swift; sourceTree = "<group>"; };
 		A00B3AA754090800C4A190AB /* TranscriptionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionStore.swift; sourceTree = "<group>"; };
@@ -68,9 +73,6 @@
 		E49B8BFD4899D49213E66351 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		ED35761EBF7EF881FA0E7BB9 /* MurmurApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MurmurApp.swift; sourceTree = "<group>"; };
 		FBF74434C602C47E5BAA6CED /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		E8F2C1D5A7B4E9F6C3A1D8E5 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/Localizable.strings; sourceTree = "<group>"; };
-		F1A2B3C4D5E6F7A8B9C0D1E2 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
-		A3B4C5D6E7F8A9B0C1D2E3F4 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -110,7 +112,7 @@
 				4613EE0D4740D47B11050CDB /* KeyboardView.swift */,
 				8D9B6369C3F5E2AFE775F256 /* KeyboardViewController.swift */,
 				CED537A7256CD6F3D7ED94AC /* MurmurKeyboard.entitlements */,
-				A3B4C5D6E7F8A9B0C1D2E3F4 /* PrivacyInfo.xcprivacy */,
+				4FB598387040EBBE3BF5FF30 /* PrivacyInfo.xcprivacy */,
 			);
 			name = MurmurKeyboard;
 			path = Sources/MurmurKeyboard;
@@ -133,11 +135,12 @@
 				DD15486FE9E2405472EDB018 /* AudioRecorder.swift */,
 				E49B8BFD4899D49213E66351 /* ContentView.swift */,
 				BA0E563F85E519D1E62A21CB /* Info.plist */,
-				E8F2C1D5A7B4E9F6C3A1D8E5 /* Localizable.strings */,
+				856CF47B02A85606D9556C99 /* Localizable.strings */,
 				45C181BC358DD79901DD4BE0 /* MenuView.swift */,
 				705220A3846AC6270FEBBC24 /* Murmur.entitlements */,
 				ED35761EBF7EF881FA0E7BB9 /* MurmurApp.swift */,
-				F1A2B3C4D5E6F7A8B9C0D1E2 /* PrivacyInfo.xcprivacy */,
+				5FBD1FE5F80F062DB789E32A /* OnboardingView.swift */,
+				254C34AE029C127E98D897BF /* PrivacyInfo.xcprivacy */,
 				1A7366E26F2E6709D6679C88 /* TextProcessor.swift */,
 				DB01809BC96EC988C7C54E58 /* TranscriptionService.swift */,
 				A00B3AA754090800C4A190AB /* TranscriptionStore.swift */,
@@ -154,7 +157,7 @@
 			buildConfigurationList = 9BA3CA05493B1ACFF0D0006F /* Build configuration list for PBXNativeTarget "MurmurKeyboard" */;
 			buildPhases = (
 				A0F2B0403F286AFF069DBE0C /* Sources */,
-				B6C7D8E9F0A1B2C3D4E5F6A7 /* Resources */,
+				5457705C822DE7519ECBAF53 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -232,21 +235,21 @@
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		5457705C822DE7519ECBAF53 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				F954043D84C1B6C6A40C9BA5 /* PrivacyInfo.xcprivacy in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		5D518C0DA7FA93F54066B380 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 				4F14AEC41A87ED2E2CDCBC3D /* Assets.xcassets in Resources */,
-				D7C4E1F9A8B3E6F2C5A9D1E8 /* Localizable.strings in Resources */,
-				D4E5F6A7B8C9D0E1F2A3B4C5 /* PrivacyInfo.xcprivacy in Resources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		B6C7D8E9F0A1B2C3D4E5F6A7 /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				E5F6A7B8C9D0E1F2A3B4C5D6 /* PrivacyInfo.xcprivacy in Resources */,
+				46322A06F708861182B60115 /* Localizable.strings in Resources */,
+				5B214DAB1EF667EA1473632C /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -261,6 +264,7 @@
 				0709B9D315755E7B821D9759 /* ContentView.swift in Sources */,
 				408A877D4281761C34883CB3 /* MenuView.swift in Sources */,
 				6DA49FB9CCA842FA4B2688C0 /* MurmurApp.swift in Sources */,
+				F836AB23661F014B05BA9F2F /* OnboardingView.swift in Sources */,
 				C944553A8C6BBDA2511FB912 /* SharedDefaults.swift in Sources */,
 				421B9904F6646C1B26B88CE8 /* TextProcessor.swift in Sources */,
 				1E0C52CD9D03926CC52517B3 /* TranscriptionService.swift in Sources */,
@@ -287,6 +291,17 @@
 			targetProxy = 1CB090AAD0F208D3C46D4CEA /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
+
+/* Begin PBXVariantGroup section */
+		856CF47B02A85606D9556C99 /* Localizable.strings */ = {
+			isa = PBXVariantGroup;
+			children = (
+				3E76F65BA5EB338EDBE2C26B /* en */,
+			);
+			name = Localizable.strings;
+			sourceTree = "<group>";
+		};
+/* End PBXVariantGroup section */
 
 /* Begin XCBuildConfiguration section */
 		355F4A46252484FA15A00B8B /* Debug */ = {
