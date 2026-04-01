@@ -41,7 +41,6 @@ struct ContentView: View {
     @State private var isProcessing = false
     @State private var errorMessage: String?
     @State private var showSettings = false
-    @State private var showMenu = false
     @State private var showCopiedToast = false
     @State private var keyboardIsEnabled = false
     @State private var shareItem: ShareableString?
@@ -51,6 +50,7 @@ struct ContentView: View {
     @State private var transcriptionTask: Task<Void, Never>?
     @State private var transcriptionTaskID: UInt = 0
     @State private var toastDismissTask: Task<Void, Never>?
+    @State private var errorDismissTask: Task<Void, Never>?
 
     // Pulse animation for recording button
     @State private var pulseScale: CGFloat = 1.0
@@ -106,6 +106,8 @@ struct ContentView: View {
         .onDisappear {
             dictationTask?.cancel()
             transcriptionTask?.cancel()
+            toastDismissTask?.cancel()
+            errorDismissTask?.cancel()
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
             checkKeyboardEnabled()
@@ -120,16 +122,15 @@ struct ContentView: View {
         }
         .onChange(of: recorder.lastInterruptionError) {
             if let error = recorder.lastInterruptionError {
-                errorMessage = error
+                presentError(error)
             }
         }
         .onReceive(store.$lastError) { error in
             if let error {
-                errorMessage = error.localizedDescription
+                presentError(error.localizedDescription)
             }
         }
         .animation(.easeInOut(duration: 0.3), value: showCopiedToast)
-        .animation(.spring(response: 0.3), value: showMenu)
     }
 
     // MARK: - Header Bar
@@ -441,38 +442,6 @@ struct ContentView: View {
         )
         .shadow(color: murmurCardShadow, radius: 16, y: 8)
         .padding(.horizontal, 20)
-        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            Button {
-                shareItem = ShareableString(text: entry.text)
-            } label: {
-                Label("Share", systemImage: "square.and.arrow.up")
-            }
-            .tint(murmurAccent)
-
-            Button(role: .destructive) {
-                withAnimation {
-                    store.delete(entry)
-                }
-            } label: {
-                Label("Delete", systemImage: "trash")
-            }
-        }
-        .swipeActions(edge: .leading, allowsFullSwipe: true) {
-            Button {
-                UIPasteboard.general.string = entry.text
-                showCopiedToast = true
-                toastDismissTask?.cancel()
-                toastDismissTask = Task {
-                    try? await Task.sleep(for: .seconds(2))
-                    if !Task.isCancelled {
-                        showCopiedToast = false
-                    }
-                }
-            } label: {
-                Label("Copy", systemImage: "doc.on.doc")
-            }
-            .tint(.blue)
-        }
         .contextMenu {
             Button {
                 UIPasteboard.general.string = entry.text
@@ -711,6 +680,29 @@ struct ContentView: View {
         }
     }
 
+    private func presentError(_ rawMessage: String) {
+        let friendlyMessage: String
+        switch rawMessage {
+        case "Audio device disconnected":
+            friendlyMessage = "Recording interrupted. Please try again."
+        default:
+            friendlyMessage = rawMessage
+        }
+
+        errorDismissTask?.cancel()
+        errorMessage = friendlyMessage
+        errorDismissTask = Task {
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled, errorMessage == friendlyMessage else { return }
+            errorMessage = nil
+        }
+    }
+
+    private func clearErrorMessage() {
+        errorDismissTask?.cancel()
+        errorMessage = nil
+    }
+
     // MARK: - Recording Actions
 
     private func handleRecordingTap() {
@@ -735,12 +727,12 @@ struct ContentView: View {
             }
             guard !Task.isCancelled else { return }
             guard transcriptionService.modelState == .loaded else {
-                errorMessage = NSLocalizedString("Cannot start dictation: model not loaded.", comment: "Error when dictation attempted before model is ready")
+                presentError(NSLocalizedString("Cannot start dictation: model not loaded.", comment: "Error when dictation attempted before model is ready"))
                 isDictationFromKeyboard = false
                 return
             }
             guard recorder.hasPermission else {
-                errorMessage = NSLocalizedString("Cannot start dictation: no microphone permission.", comment: "Error when dictation attempted without mic permission")
+                presentError(NSLocalizedString("Cannot start dictation: no microphone permission.", comment: "Error when dictation attempted without mic permission"))
                 showMicPermissionAlert = true
                 isDictationFromKeyboard = false
                 return
@@ -750,21 +742,24 @@ struct ContentView: View {
     }
 
     private func startRecording() {
-        errorMessage = nil
+        clearErrorMessage()
         do {
             try recorder.startRecording()
         } catch {
-            errorMessage = error.localizedDescription
+            if case RecordingError.noPermission = error {
+                showMicPermissionAlert = recorder.permissionDenied
+            }
+            presentError(error.localizedDescription)
         }
     }
 
     private func stopAndTranscribe() {
         guard let audioURL = recorder.stopRecording() else {
-            errorMessage = NSLocalizedString("No audio was recorded.", comment: "Error when recording produces no audio")
+            presentError(NSLocalizedString("No audio was recorded.", comment: "Error when recording produces no audio"))
             return
         }
         isProcessing = true
-        errorMessage = nil
+        clearErrorMessage()
 
         // Cancel any existing transcription task before starting a new one
         transcriptionTask?.cancel()
@@ -800,7 +795,7 @@ struct ContentView: View {
                 isDictationFromKeyboard = false
             } catch {
                 isDictationFromKeyboard = false
-                errorMessage = error.localizedDescription
+                presentError(error.localizedDescription)
             }
         }
         transcriptionTask = task
@@ -849,7 +844,7 @@ struct SettingsView: View {
 
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Murmur v1.0")
+                        Text("Murmur v2.1")
                             .font(.headline)
                         Text("On-device speech-to-text powered by WhisperKit.\nNo data leaves your device.")
                             .font(.caption)

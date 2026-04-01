@@ -35,7 +35,7 @@ enum SharedDefaults {
     static func setPendingText(_ text: String) {
         suite.set(text, forKey: pendingTextKey)
         suite.set(Date().timeIntervalSince1970, forKey: pendingTextTimestampKey)
-        suite.synchronize()
+
     }
 
     /// Reads and clears the pending transcribed text.
@@ -76,7 +76,7 @@ enum SharedDefaults {
     static func clearPendingText() {
         suite.removeObject(forKey: pendingTextKey)
         suite.removeObject(forKey: pendingTextTimestampKey)
-        suite.synchronize()
+
     }
 
     // MARK: - Dictation Request Flag
@@ -84,7 +84,7 @@ enum SharedDefaults {
     /// Sets a flag indicating the keyboard has requested dictation.
     static func setDictationRequested(_ requested: Bool) {
         suite.set(requested, forKey: dictationRequestedKey)
-        suite.synchronize()
+
     }
 
     /// Checks and clears the dictation-requested flag.
@@ -92,7 +92,7 @@ enum SharedDefaults {
         let requested = suite.bool(forKey: dictationRequestedKey)
         if requested {
             suite.set(false, forKey: dictationRequestedKey)
-            suite.synchronize()
+    
         }
         return requested
     }
@@ -104,7 +104,7 @@ enum SharedDefaults {
     /// Called by the keyboard extension when it loads, to signal the main app.
     static func setKeyboardActive(_ active: Bool) {
         suite.set(active, forKey: keyboardActiveKey)
-        suite.synchronize()
+
     }
 
     /// Returns whether the keyboard extension has been activated at least once.

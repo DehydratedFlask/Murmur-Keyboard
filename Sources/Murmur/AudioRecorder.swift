@@ -11,13 +11,11 @@ final class AudioRecorder: ObservableObject {
     @Published private(set) var isRecording = false
     @Published private(set) var hasPermission = false
     @Published private(set) var permissionDenied = false
-    @Published private(set) var audioLevel: Float = 0.0
     @Published private(set) var lastInterruptionError: String?
 
     // MARK: - Private Properties
 
     private var audioEngine: AVAudioEngine?
-    private var audioFile: AVAudioFile?
     private var recordingURL: URL?
     private nonisolated(unsafe) var interruptionObserver: (any NSObjectProtocol)?
     private nonisolated(unsafe) var routeChangeObserver: (any NSObjectProtocol)?
@@ -51,8 +49,9 @@ final class AudioRecorder: ObservableObject {
         ) { [weak self] notification in
             // Extract sendable values before crossing isolation boundary
             let typeValue = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
+            let optionsValue = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt
             Task { @MainActor in
-                self?.handleInterruption(typeValue: typeValue)
+                self?.handleInterruption(typeValue: typeValue, optionsValue: optionsValue)
             }
         }
         let routeChangeToken = NotificationCenter.default.addObserver(
@@ -69,14 +68,25 @@ final class AudioRecorder: ObservableObject {
         self.routeChangeObserver = routeChangeToken
     }
 
-    private func handleInterruption(typeValue: UInt?) {
-        guard isRecording else { return }
+    private func handleInterruption(typeValue: UInt?, optionsValue: UInt?) {
         guard let typeValue, let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
 
-        if type == .began {
-            lastInterruptionError = "Recording interrupted (e.g. phone call). Partial audio was discarded."
-            stopRecording()
-            cleanupRecording()
+        switch type {
+        case .began:
+            guard isRecording else { return }
+            finishInterruptedRecording(with: .sessionInterrupted)
+        case .ended:
+            guard let optionsValue else { return }
+            let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
+            if options.contains(.shouldResume) {
+                do {
+                    try AVAudioSession.sharedInstance().setActive(true)
+                } catch {
+                    lastInterruptionError = RecordingError.engineStartFailed.errorDescription
+                }
+            }
+        @unknown default:
+            break
         }
     }
 
@@ -85,13 +95,17 @@ final class AudioRecorder: ObservableObject {
         guard let reasonValue, let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else { return }
 
         switch reason {
-        case .oldDeviceUnavailable, .categoryChange:
-            lastInterruptionError = "Audio device disconnected. Partial audio was discarded."
-            stopRecording()
-            cleanupRecording()
+        case .oldDeviceUnavailable:
+            finishInterruptedRecording(with: .audioDeviceDisconnected)
         default:
             break
         }
+    }
+
+    private func finishInterruptedRecording(with error: RecordingError) {
+        lastInterruptionError = error.errorDescription
+        stopRecording()
+        cleanupRecording()
     }
 
     // MARK: - Permission
@@ -149,6 +163,7 @@ final class AudioRecorder: ObservableObject {
     func startRecording() throws {
         guard !isRecording else { return }
         lastInterruptionError = nil
+        cleanupRecording()
 
         guard hasPermission else {
             throw RecordingError.noPermission
@@ -157,7 +172,7 @@ final class AudioRecorder: ObservableObject {
         // Configure audio session
         let session = AVAudioSession.sharedInstance()
         do {
-            try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker])
+            try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
             try session.setActive(true, options: .notifyOthersOnDeactivation)
         } catch {
             throw RecordingError.engineStartFailed
@@ -208,9 +223,6 @@ final class AudioRecorder: ObservableObject {
 
         // Install tap on input node
         inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
-            // Calculate audio level for UI visualization
-            self?.calculateAudioLevel(buffer: buffer)
-
             // Convert to 16kHz mono
             let frameCount = AVAudioFrameCount(
                 Double(buffer.frameLength) * (self?.targetSampleRate ?? 16000.0) / inputFormat.sampleRate
@@ -236,10 +248,16 @@ final class AudioRecorder: ObservableObject {
             }
         }
 
-        try engine.start()
+        do {
+            try engine.start()
+        } catch {
+            inputNode.removeTap(onBus: 0)
+            try? session.setActive(false, options: .notifyOthersOnDeactivation)
+            try? FileManager.default.removeItem(at: url)
+            throw RecordingError.engineStartFailed
+        }
 
         self.audioEngine = engine
-        self.audioFile = file
         self.recordingURL = url
         self.isRecording = true
     }
@@ -250,9 +268,7 @@ final class AudioRecorder: ObservableObject {
         audioEngine?.inputNode.removeTap(onBus: 0)
         audioEngine?.stop()
         audioEngine = nil
-        audioFile = nil
         isRecording = false
-        audioLevel = 0.0
 
         // Deactivate audio session
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
@@ -272,25 +288,6 @@ final class AudioRecorder: ObservableObject {
         }
     }
 
-    // MARK: - Audio Level
-
-    private nonisolated func calculateAudioLevel(buffer: AVAudioPCMBuffer) {
-        guard let channelData = buffer.floatChannelData?[0] else { return }
-        let frames = Int(buffer.frameLength)
-
-        var sum: Float = 0
-        for i in 0..<frames {
-            let sample = channelData[i]
-            sum += sample * sample
-        }
-        let rms = sqrt(sum / Float(max(frames, 1)))
-        // Convert to a 0-1 range with some amplification
-        let level = min(max(rms * 3.0, 0), 1.0)
-
-        Task { @MainActor [weak self] in
-            self?.audioLevel = level
-        }
-    }
 }
 
 // MARK: - Errors
@@ -299,7 +296,8 @@ enum RecordingError: LocalizedError {
     case noPermission
     case formatError
     case engineStartFailed
-    case interrupted(String)
+    case audioDeviceDisconnected
+    case sessionInterrupted
 
     var errorDescription: String? {
         switch self {
@@ -309,8 +307,10 @@ enum RecordingError: LocalizedError {
             return "Failed to configure audio format."
         case .engineStartFailed:
             return "Failed to start the audio engine."
-        case .interrupted(let reason):
-            return reason
+        case .audioDeviceDisconnected:
+            return "Audio device disconnected"
+        case .sessionInterrupted:
+            return "Recording interrupted"
         }
     }
 }

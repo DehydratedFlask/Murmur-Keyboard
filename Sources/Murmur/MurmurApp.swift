@@ -17,7 +17,6 @@ struct MurmurApp: App {
                 }
             }
             .animation(.easeInOut(duration: 0.35), value: hasCompletedOnboarding)
-            .preferredColorScheme(.light)
             .environmentObject(appState)
             .onOpenURL { url in
                 if url.scheme == "murmur" && url.host == "dictate" {

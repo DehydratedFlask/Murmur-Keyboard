@@ -29,11 +29,16 @@ final class TranscriptionStore: ObservableObject {
 
     private let fileURL: URL
     private var saveTask: Task<Void, Never>?
+    private var saveGeneration: UInt = 0
 
     init() {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         fileURL = docs.appendingPathComponent("transcriptions.json")
         load()
+    }
+
+    deinit {
+        saveTask?.cancel()
     }
 
     // MARK: - Public API
@@ -57,10 +62,6 @@ final class TranscriptionStore: ObservableObject {
         if isLoaded {
             persist()
         }
-    }
-
-    func fetchAll() -> [TranscriptionEntry] {
-        entries.sorted { $0.timestamp > $1.timestamp }
     }
 
     // MARK: - Derived Stats
@@ -93,28 +94,54 @@ final class TranscriptionStore: ObservableObject {
                 let merged = (entries + diskOnly).sorted { $0.timestamp > $1.timestamp }
                 entries = merged
                 isLoaded = true
+                lastError = nil
                 persist()
             } catch {
                 print("[TranscriptionStore] Failed to load transcriptions: \(error)")
                 isLoaded = true
+                lastError = error
             }
         }
     }
 
     private func persist() {
         saveTask?.cancel()
+        saveGeneration &+= 1
+        let generation = saveGeneration
         let entriesToSave = entries
         let url = fileURL
         saveTask = Task {
             do {
-                try await Task.detached {
-                    guard !Task.isCancelled else { return }
+                let tempURL = try await Task.detached {
+                    guard !Task.isCancelled else { throw CancellationError() }
                     let encoder = JSONEncoder()
                     encoder.outputFormatting = .prettyPrinted
                     let data = try encoder.encode(entriesToSave)
-                    guard !Task.isCancelled else { return }
-                    try data.write(to: url, options: .atomicWrite)
+                    guard !Task.isCancelled else { throw CancellationError() }
+                    let tempURL = url
+                        .deletingLastPathComponent()
+                        .appendingPathComponent("\(url.deletingPathExtension().lastPathComponent)-\(generation)")
+                        .appendingPathExtension(url.pathExtension)
+                    try data.write(to: tempURL, options: .atomicWrite)
+                    return tempURL
                 }.value
+
+                guard !Task.isCancelled else {
+                    try? FileManager.default.removeItem(at: tempURL)
+                    return
+                }
+
+                guard generation == saveGeneration else {
+                    try? FileManager.default.removeItem(at: tempURL)
+                    return
+                }
+
+                if FileManager.default.fileExists(atPath: url.path) {
+                    _ = try FileManager.default.replaceItemAt(url, withItemAt: tempURL)
+                } else {
+                    try FileManager.default.moveItem(at: tempURL, to: url)
+                }
+                lastError = nil
             } catch {
                 if !(error is CancellationError) {
                     print("[TranscriptionStore] Failed to persist transcriptions: \(error)")

@@ -4,7 +4,11 @@ func generateIcon(size: Int, outputPath: String) {
     let s = CGFloat(size)
     let image = NSImage(size: NSSize(width: s, height: s))
     image.lockFocus()
-    let ctx = NSGraphicsContext.current!.cgContext
+    guard let ctx = NSGraphicsContext.current?.cgContext else {
+        fputs("Failed to create graphics context for size \(size).\n", stderr)
+        image.unlockFocus()
+        return
+    }
 
     // Pure black background
     ctx.setFillColor(CGColor(red: 0.0, green: 0.0, blue: 0.0, alpha: 1.0))
@@ -43,8 +47,12 @@ func generateIcon(size: Int, outputPath: String) {
         return
     }
 
-    try! pngData.write(to: URL(fileURLWithPath: outputPath))
-    print("Generated \(size)x\(size) icon at \(outputPath)")
+    do {
+        try pngData.write(to: URL(fileURLWithPath: outputPath))
+        print("Generated \(size)x\(size) icon at \(outputPath)")
+    } catch {
+        fputs("Failed to write PNG for size \(size): \(error)\n", stderr)
+    }
 }
 
 let iconDir = "/Users/jarvis/Desktop/Murmur/Sources/Murmur/Assets.xcassets/AppIcon.appiconset"

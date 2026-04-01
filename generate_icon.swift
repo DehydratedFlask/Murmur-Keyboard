@@ -5,7 +5,10 @@ let image = NSImage(size: NSSize(width: size, height: size))
 
 image.lockFocus()
 
-let context = NSGraphicsContext.current!.cgContext
+guard let context = NSGraphicsContext.current?.cgContext else {
+    fputs("Failed to create graphics context.\n", stderr)
+    exit(1)
+}
 
 // Background gradient - deep blue to teal
 let colorSpace = CGColorSpaceCreateDeviceRGB()
@@ -15,7 +18,10 @@ let gradientColors = [
     CGColor(red: 0.15, green: 0.45, blue: 0.55, alpha: 1.0),  // Teal
 ] as CFArray
 
-let gradient = CGGradient(colorsSpace: colorSpace, colors: gradientColors, locations: [0.0, 0.6, 1.0])!
+guard let gradient = CGGradient(colorsSpace: colorSpace, colors: gradientColors, locations: [0.0, 0.6, 1.0]) else {
+    fputs("Failed to create background gradient.\n", stderr)
+    exit(1)
+}
 context.drawLinearGradient(gradient,
     start: CGPoint(x: 0, y: size),
     end: CGPoint(x: size, y: 0),
@@ -53,7 +59,10 @@ let micGradientColors = [
     CGColor(red: 0.95, green: 0.95, blue: 1.0, alpha: 1.0),
     CGColor(red: 0.75, green: 0.80, blue: 0.90, alpha: 1.0),
 ] as CFArray
-let micGradient = CGGradient(colorsSpace: colorSpace, colors: micGradientColors, locations: [0.0, 1.0])!
+guard let micGradient = CGGradient(colorsSpace: colorSpace, colors: micGradientColors, locations: [0.0, 1.0]) else {
+    fputs("Failed to create microphone gradient.\n", stderr)
+    exit(1)
+}
 
 context.saveGState()
 context.addPath(micPath)
@@ -144,5 +153,10 @@ guard let tiffData = image.tiffRepresentation,
 }
 
 let outputURL = URL(fileURLWithPath: "/Users/jarvis/Desktop/Murmur/icon-1024.png")
-try! pngData.write(to: outputURL)
+do {
+    try pngData.write(to: outputURL)
+} catch {
+    fputs("Failed to write PNG: \(error)\n", stderr)
+    exit(1)
+}
 print("Icon saved to \(outputURL.path)")
