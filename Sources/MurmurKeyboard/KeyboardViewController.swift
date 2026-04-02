@@ -10,6 +10,8 @@ class KeyboardViewController: UIInputViewController {
     private var hostingController: UIHostingController<KeyboardView>?
     private var pendingTextTimer: Timer?
 
+    private let dictationTimeout: TimeInterval = 75
+
     /// ViewModel shared with the SwiftUI view layer.
     private let viewModel = KeyboardViewModel()
 
@@ -23,6 +25,7 @@ class KeyboardViewController: UIInputViewController {
         viewModel.hasFullAccess = hasFullAccess
         viewModel.prepareHaptics()
         viewModel.autoCapitalize()
+        viewModel.refreshSharedState()
 
         SharedDefaults.setKeyboardActive(true)
 
@@ -59,6 +62,7 @@ class KeyboardViewController: UIInputViewController {
         viewModel.hasFullAccess = hasFullAccess
         viewModel.autoCapitalize()
         viewModel.updateSuggestions()
+        viewModel.refreshSharedState()
         checkForPendingText()
     }
 
@@ -68,6 +72,7 @@ class KeyboardViewController: UIInputViewController {
         viewModel.hasFullAccess = hasFullAccess
         viewModel.autoCapitalize()
         viewModel.updateSuggestions()
+        viewModel.refreshSharedState()
         // Start a timer to periodically check for pending text
         // (handles the case where the app returns after dictation)
         startPendingTextTimer()
@@ -85,15 +90,46 @@ class KeyboardViewController: UIInputViewController {
         viewModel.hasFullAccess = hasFullAccess
         viewModel.autoCapitalize()
         viewModel.updateSuggestions()
+        viewModel.refreshSharedState()
     }
 
     // MARK: - Pending Text Handling
 
     private func checkForPendingText() {
-        if let text = SharedDefaults.consumePendingText(), !text.isEmpty {
-            textDocumentProxy.insertText(textForInsertion(text))
+        viewModel.refreshSharedState()
+
+        if let payload = SharedDefaults.peekPendingTextPayload(),
+           let activeSessionID = viewModel.activeSessionID,
+           payload.sessionID == nil || payload.sessionID == activeSessionID,
+           let consumed = SharedDefaults.consumePendingTextPayload() {
+            textDocumentProxy.insertText(textForInsertion(consumed.text))
+            SharedDefaults.clearDictationSession()
+            viewModel.activeSessionID = nil
+            viewModel.refreshSharedState()
             viewModel.autoCapitalize()
             viewModel.updateSuggestions()
+            return
+        }
+
+        if let abandoned = SharedDefaults.consumeAbandonedDictationSession() {
+            if abandoned.sessionID == nil || abandoned.sessionID == viewModel.activeSessionID {
+                SharedDefaults.clearDictationSession()
+                viewModel.activeSessionID = nil
+                viewModel.presentHandoffError(abandoned.reason ?? "Dictation ended before a transcription was ready.")
+                viewModel.refreshSharedState()
+                return
+            }
+        }
+
+        if viewModel.activeSessionID != nil,
+           let age = SharedDefaults.dictationSessionAge(),
+           age >= dictationTimeout {
+            SharedDefaults.abandonDictationSession(reason: "Murmur took too long to respond. Please try again.")
+            SharedDefaults.clearPendingText()
+            SharedDefaults.clearDictationSession()
+            viewModel.activeSessionID = nil
+            viewModel.presentHandoffError("Murmur took too long to respond. Please try again.")
+            viewModel.refreshSharedState()
         }
     }
 
@@ -144,6 +180,9 @@ final class KeyboardViewModel: ObservableObject {
     @Published var showSymbols = false
     @Published var hasFullAccess = false
     @Published var handoffError: String?
+    @Published var isModelWarm = false
+    @Published var dictationStatusText = "Loading"
+    var activeSessionID: String?
     private var handoffDismissTask: Task<Void, Never>?
 
     // Haptic feedback generators
@@ -178,6 +217,26 @@ final class KeyboardViewModel: ObservableObject {
     func prepareHaptics() {
         lightHaptic.prepare()
         mediumHaptic.prepare()
+    }
+
+    func refreshSharedState() {
+        isModelWarm = SharedDefaults.isModelReady()
+        if let progress = SharedDefaults.modelLoadingProgress(), !progress.isEmpty, !isModelWarm {
+            dictationStatusText = "Loading"
+        } else {
+            dictationStatusText = isModelWarm ? "Ready" : "Loading"
+        }
+    }
+
+    func presentHandoffError(_ message: String) {
+        handoffError = message
+        handoffDismissTask?.cancel()
+        handoffDismissTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(3))
+            if !Task.isCancelled {
+                self.handoffError = nil
+            }
+        }
     }
 
     // MARK: - Computed
@@ -440,22 +499,22 @@ final class KeyboardViewModel: ObservableObject {
 
     func openMurmurForDictation() {
         guard hasFullAccess else { return }
+
+        let sessionID = UUID().uuidString
+        activeSessionID = sessionID
+        SharedDefaults.beginDictationSession(sessionID: sessionID)
         SharedDefaults.setDictationRequested(true)
+
         guard let url = URL(string: "murmur://dictate") else { return }
         inputViewController?.extensionContext?.open(url) { [weak self] success in
             Task { @MainActor in
                 guard let self else { return }
                 if !success {
                     SharedDefaults.setDictationRequested(false)
-                    self.handoffError = "Could not open Murmur. Please open the app manually."
-                    // Auto-dismiss error after 3 seconds
-                    self.handoffDismissTask?.cancel()
-                    self.handoffDismissTask = Task { @MainActor in
-                        try? await Task.sleep(for: .seconds(3))
-                        if !Task.isCancelled {
-                            self.handoffError = nil
-                        }
-                    }
+                    SharedDefaults.abandonDictationSession(reason: "Could not open Murmur. Please open the app manually.")
+                    SharedDefaults.clearDictationSession()
+                    self.activeSessionID = nil
+                    self.presentHandoffError("Could not open Murmur. Please open the app manually.")
                 }
             }
         }

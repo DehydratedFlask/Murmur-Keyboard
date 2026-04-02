@@ -30,6 +30,7 @@ final class TranscriptionStore: ObservableObject {
     private let fileURL: URL
     private var saveTask: Task<Void, Never>?
     private var saveGeneration: UInt = 0
+    private var loadTask: Task<Void, Never>?
 
     init() {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -38,6 +39,7 @@ final class TranscriptionStore: ObservableObject {
     }
 
     deinit {
+        loadTask?.cancel()
         saveTask?.cancel()
     }
 
@@ -80,13 +82,15 @@ final class TranscriptionStore: ObservableObject {
 
     private func load() {
         let url = fileURL
-        Task {
+        let task = Task {
             do {
                 let decoded = try await Task.detached {
                     guard FileManager.default.fileExists(atPath: url.path) else { return [TranscriptionEntry]() }
                     let data = try Data(contentsOf: url)
                     return try JSONDecoder().decode([TranscriptionEntry].self, from: data)
                 }.value
+
+                guard !Task.isCancelled else { return }
 
                 // Merge: keep any entries created in-memory before load finished
                 let inMemoryIDs = Set(entries.map { $0.id })
@@ -96,12 +100,16 @@ final class TranscriptionStore: ObservableObject {
                 isLoaded = true
                 lastError = nil
                 persist()
+            } catch is CancellationError {
+                // Task was cancelled — bail out silently
+                ()
             } catch {
                 print("[TranscriptionStore] Failed to load transcriptions: \(error)")
                 isLoaded = true
                 lastError = error
             }
         }
+        loadTask = task
     }
 
     private func persist() {

@@ -40,8 +40,11 @@ final class TranscriptionService: ObservableObject {
     func loadModel() async {
         let modelName = selectedModel.whisperKitName
 
+        SharedDefaults.setModelReady(false, progressText: nil)
+
         // Skip if already loaded with the same model
         if modelState == .loaded, currentModelName == modelName {
+            SharedDefaults.setModelReady(true, progressText: nil)
             return
         }
 
@@ -49,7 +52,8 @@ final class TranscriptionService: ObservableObject {
         guard modelState != .loading else { return }
 
         modelState = .loading
-        loadingProgress = "Downloading \(selectedModel.displayName) model..."
+        loadingProgress = "Loading \(selectedModel.displayName) model…"
+        SharedDefaults.updateModelLoadingProgress(loadingProgress)
 
         do {
             // WhisperKit 0.9+ accepts a WhisperKitConfig for initialization.
@@ -68,9 +72,11 @@ final class TranscriptionService: ObservableObject {
             self.currentModelName = modelName
             self.modelState = .loaded
             self.loadingProgress = ""
+            SharedDefaults.setModelReady(true, progressText: nil)
         } catch {
             self.modelState = .error(error.localizedDescription)
             self.loadingProgress = ""
+            SharedDefaults.setModelReady(false, progressText: nil)
         }
     }
 
@@ -86,6 +92,8 @@ final class TranscriptionService: ObservableObject {
         whisperKit = nil
         currentModelName = nil
         modelState = .unloaded
+        loadingProgress = ""
+        SharedDefaults.setModelReady(false, progressText: nil)
     }
 
     // MARK: - Transcription

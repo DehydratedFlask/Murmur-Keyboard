@@ -4,7 +4,19 @@ import SwiftUI
 
 private let murmurAccent = Color(red: 0.39, green: 0.28, blue: 0.95)
 private let murmurAccentSecondary = Color(red: 0.53, green: 0.44, blue: 1.0)
-private let murmurCardShadow = Color.black.opacity(0.08)
+private let murmurCardShadow = Color.black.opacity(0.16)
+
+private func murmurSurface(_ scheme: ColorScheme) -> Color {
+    scheme == .dark ? Color(red: 0.15, green: 0.15, blue: 0.18) : Color(.secondarySystemGroupedBackground)
+}
+
+private func murmurSurfaceElevated(_ scheme: ColorScheme) -> Color {
+    scheme == .dark ? Color(red: 0.18, green: 0.18, blue: 0.21) : Color(.secondarySystemGroupedBackground)
+}
+
+private func murmurBorder(_ scheme: ColorScheme, opacity: Double = 0.08) -> Color {
+    scheme == .dark ? Color.white.opacity(opacity) : Color.primary.opacity(opacity)
+}
 
 // MARK: - Cached formatters
 
@@ -31,6 +43,7 @@ private let cachedSectionDateFormatter: DateFormatter = {
 struct ContentView: View {
 
     @EnvironmentObject private var appState: AppState
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @StateObject private var recorder = AudioRecorder()
@@ -45,6 +58,8 @@ struct ContentView: View {
     @State private var keyboardIsEnabled = false
     @State private var shareItem: ShareableString?
     @State private var isDictationFromKeyboard = false
+    @State private var keyboardDictationSessionID: String?
+    @State private var keyboardCompletionMessage: String?
     @State private var dictationTask: Task<Void, Never>?
     @State private var showMicPermissionAlert = false
     @State private var transcriptionTask: Task<Void, Never>?
@@ -55,9 +70,21 @@ struct ContentView: View {
     // Pulse animation for recording button
     @State private var pulseScale: CGFloat = 1.0
 
+    private var recordFABTrailingPadding: CGFloat {
+        UIScreen.main.bounds.width <= 390 ? 28 : 24
+    }
+
+    private var recordFABBottomPadding: CGFloat {
+        UIScreen.main.bounds.height <= 667 ? 42 : 34
+    }
+
+    // Haptic feedback for record button
+    private let recordHaptic = UIImpactFeedbackGenerator(style: .medium)
+    private let successHaptic = UINotificationFeedbackGenerator()
+
     var body: some View {
         ZStack(alignment: .top) {
-            Color(.systemGroupedBackground)
+            (colorScheme == .dark ? Color(red: 0.07, green: 0.07, blue: 0.09) : Color(.systemGroupedBackground))
                 .ignoresSafeArea()
 
             VStack(spacing: 0) {
@@ -65,6 +92,13 @@ struct ContentView: View {
                 statusBar
 
                 transcriptionList
+            }
+
+            if isDictationFromKeyboard {
+                keyboardDictationOverlay
+                    .padding(.horizontal, 20)
+                    .padding(.top, 92)
+                    .transition(.move(edge: .top).combined(with: .opacity))
             }
 
             if showCopiedToast {
@@ -77,13 +111,15 @@ struct ContentView: View {
                 HStack {
                     Spacer()
                     recordFAB
-                        .padding(.trailing, 24)
-                        .padding(.bottom, 34)
+                        .padding(.trailing, recordFABTrailingPadding)
+                        .padding(.bottom, recordFABBottomPadding)
                 }
             }
         }
         .sheet(isPresented: $showSettings) {
             SettingsView(transcriptionService: transcriptionService)
+                .presentationDetents([.medium])
+                .presentationDragIndicator(.visible)
         }
         .sheet(item: $shareItem) { item in
             ShareSheet(text: item.text)
@@ -99,12 +135,19 @@ struct ContentView: View {
             Text("Please enable microphone access in Settings to use Murmur.")
         }
         .task {
+            SharedDefaults.setModelReady(false, progressText: nil)
             await recorder.requestPermission()
             await transcriptionService.loadModel()
             checkKeyboardEnabled()
         }
         .onDisappear {
-            dictationTask?.cancel()
+            // Only signal abandonment if we are actively recording for a keyboard
+            // dictation. Disappearing for benign reasons (Settings sheet, tab
+            // switch, app suspend) must NOT tear down a healthy keyboard session.
+            if isDictationFromKeyboard, recorder.isRecording {
+                signalKeyboardDictationAbandoned(reason: "Dictation was interrupted.")
+                dictationTask?.cancel()
+            }
             transcriptionTask?.cancel()
             toastDismissTask?.cancel()
             errorDismissTask?.cancel()
@@ -112,16 +155,38 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
             checkKeyboardEnabled()
         }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+            // Immediate check on activation
+            checkKeyboardEnabled()
+            // Delayed re-check: activeInputModes can lag briefly after returning from Settings
+            Task {
+                try? await Task.sleep(for: .milliseconds(600))
+                checkKeyboardEnabled()
+            }
+        }
         .onChange(of: appState.shouldStartDictation) {
             if appState.shouldStartDictation {
                 appState.shouldStartDictation = false
-                isDictationFromKeyboard = SharedDefaults.consumeDictationRequested()
+
+                // If there is already an active keyboard dictation in progress,
+                // ignore the duplicate trigger instead of tearing recording down.
+                guard !isDictationFromKeyboard || !recorder.isRecording else { return }
+
+                // Cancel any prior stale / background task before starting new work.
                 dictationTask?.cancel()
+
+                isDictationFromKeyboard = SharedDefaults.consumeDictationRequested()
+                keyboardDictationSessionID = isDictationFromKeyboard ? SharedDefaults.currentDictationSessionID() : nil
+                keyboardCompletionMessage = nil
+
                 dictationTask = handleDictationRequest()
             }
         }
         .onChange(of: recorder.lastInterruptionError) {
             if let error = recorder.lastInterruptionError {
+                if isDictationFromKeyboard {
+                    signalKeyboardDictationAbandoned(reason: error)
+                }
                 presentError(error)
             }
         }
@@ -144,10 +209,13 @@ struct ContentView: View {
                     .font(.system(size: 18, weight: .semibold))
                     .foregroundStyle(.primary)
                     .frame(width: 44, height: 44)
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .background(
+                        Color(.systemBackground).opacity(colorScheme == .dark ? 0.55 : 0.72),
+                        in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    )
                     .overlay(
                         RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+                            .stroke(murmurBorder(colorScheme, opacity: 0.10), lineWidth: 1)
                     )
             }
             .buttonStyle(.plain)
@@ -171,26 +239,19 @@ struct ContentView: View {
             }
 
             Spacer()
-
-            Button {
-                if let url = URL(string: "https://buymeacoffee.com/tgn5dq5j8xs") {
-                    UIApplication.shared.open(url)
-                }
-            } label: {
-                Image(systemName: "cup.and.saucer.fill")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(.black)
-                    .frame(width: 44, height: 44)
-                    .background(Color.yellow.gradient, in: Circle())
-                    .shadow(color: Color.yellow.opacity(0.24), radius: 10, y: 4)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Buy me a coffee")
+            // Buy Me a Coffee button removed for cleaner header
+            Color.clear.frame(width: 44)
         }
         .padding(.horizontal, 20)
         .padding(.top, 14)
         .padding(.bottom, 18)
-        .background(Color(.systemGroupedBackground).opacity(0.94))
+        .background(Color(.systemBackground).opacity(colorScheme == .dark ? 0.92 : 0.94))
+        .overlay(
+            Rectangle()
+                .fill(murmurBorder(colorScheme, opacity: 0.06))
+                .frame(height: 1),
+            alignment: .bottom
+        )
     }
 
     // MARK: - Status Bar
@@ -216,20 +277,31 @@ struct ContentView: View {
                 .padding(.bottom, 8)
 
             case .error(let msg):
-                HStack(spacing: 10) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                    Text(msg)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
+                Button {
+                    clearErrorMessage()
+                    Task { await transcriptionService.loadModel() }
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                        Text(msg)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                        Spacer()
+                        Image(systemName: "arrow.clockwise")
+                            .font(.caption)
+                            .foregroundStyle(murmurAccent)
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
+                .buttonStyle(.plain)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 .padding(.horizontal, 20)
                 .padding(.bottom, 8)
+                .accessibilityHint("Tap to retry model loading")
 
             default:
                 EmptyView()
@@ -237,54 +309,85 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - Stats Section
-
-    private var statsSection: some View {
-        HStack(alignment: .center, spacing: 16) {
+    private var keyboardDictationOverlay: some View {
+        HStack(spacing: 12) {
             ZStack {
                 Circle()
-                    .fill(.white.opacity(0.14))
-                    .frame(width: 56, height: 56)
-                Image(systemName: "waveform.badge.magnifyingglass")
-                    .font(.system(size: 24, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.94))
+                    .fill(murmurAccent.opacity(0.12))
+                    .frame(width: 40, height: 40)
+
+                if isProcessing {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: recorder.isRecording ? "waveform.circle.fill" : "mic.circle.fill")
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundStyle(murmurAccent)
+                }
             }
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("Dictation at a glance")
+                Text(recorder.isRecording ? "Listening for keyboard dictation" : (isProcessing ? "Transcribing keyboard dictation" : "Dictation ready"))
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.white.opacity(0.84))
-                Text("\(formatNumber(store.totalWordCount)) words")
-                    .font(.system(size: 30, weight: .bold, design: .rounded))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                Text("Average \(store.avgWordsPerDictation) words per dictation")
-                    .font(.footnote.weight(.medium))
-                    .foregroundStyle(.white.opacity(0.78))
-                    .lineLimit(2)
+                    .foregroundStyle(.primary)
+                Text(keyboardCompletionMessage ?? (isProcessing ? "Murmur is turning your speech into text." : "Stay here while Murmur captures your speech, then switch back to paste the result."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Spacer(minLength: 0)
         }
-        .padding(20)
+        .padding(14)
+        .background(murmurSurfaceElevated(colorScheme), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(murmurBorder(colorScheme, opacity: 0.12), lineWidth: 1)
+        )
+        .shadow(color: murmurAccent.opacity(colorScheme == .dark ? 0.10 : 0.08), radius: 12, y: 6)
+    }
+
+    // MARK: - Stats Section
+
+    private var statsSection: some View {
+        HStack(alignment: .center, spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(Color.white.opacity(0.14))
+                    .frame(width: 40, height: 40)
+                Image(systemName: "waveform.badge.magnifyingglass")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(Color.white.opacity(0.92))
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(formatNumber(store.totalWordCount)) words total")
+                    .font(.system(size: 20, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                Text("Avg \(store.avgWordsPerDictation) per dictation")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Color.white.opacity(0.78))
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(14)
         .frame(maxWidth: .infinity)
         .background(
             LinearGradient(
-                colors: [murmurAccent, murmurAccentSecondary],
+                colors: [murmurAccent.opacity(0.82), murmurAccentSecondary.opacity(0.78)],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
         )
-        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .stroke(Color.white.opacity(0.16), lineWidth: 1)
-        )
-        .shadow(color: murmurAccent.opacity(0.22), radius: 24, y: 12)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .shadow(color: murmurAccent.opacity(0.12), radius: 10, y: 6)
         .padding(.horizontal, 20)
         .padding(.top, 6)
-        .padding(.bottom, 18)
+        .padding(.bottom, 12)
     }
 
     private func formatNumber(_ n: Int) -> String {
@@ -316,10 +419,10 @@ struct ContentView: View {
                         }
                         .padding(16)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        .background(murmurSurfaceElevated(colorScheme), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
                         .overlay(
                             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                .stroke(Color.orange.opacity(0.18), lineWidth: 1)
+                                .stroke(Color.orange.opacity(colorScheme == .dark ? 0.28 : 0.18), lineWidth: 1)
                         )
                         .padding(.horizontal, 20)
                     }
@@ -354,7 +457,7 @@ struct ContentView: View {
                     .frame(width: 108, height: 108)
 
                 Circle()
-                    .strokeBorder(Color.white.opacity(0.8), lineWidth: 1)
+                    .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
                     .frame(width: 108, height: 108)
 
                 Image(systemName: "waveform")
@@ -401,7 +504,7 @@ struct ContentView: View {
     }
 
     private func entryRow(_ entry: TranscriptionEntry) -> some View {
-        let titleText = String(entry.text.prefix(60)).components(separatedBy: ".").first ?? String(entry.text.prefix(60))
+        let titleText = previewTitle(for: entry.text)
 
         return VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 12) {
@@ -435,12 +538,12 @@ struct ContentView: View {
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .background(murmurSurface(colorScheme), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .stroke(Color.primary.opacity(0.05), lineWidth: 1)
+                .stroke(murmurBorder(colorScheme, opacity: 0.09), lineWidth: 1)
         )
-        .shadow(color: murmurCardShadow, radius: 16, y: 8)
+        .shadow(color: murmurCardShadow.opacity(colorScheme == .dark ? 0.72 : 1), radius: 16, y: 8)
         .padding(.horizontal, 20)
         .contextMenu {
             Button {
@@ -514,10 +617,26 @@ struct ContentView: View {
         cachedTimeFormatter.string(from: date)
     }
 
+    /// Generate a clean preview title from transcription text.
+    /// Uses word-count-based truncation with an ellipsis instead of sentence-splitting.
+    private func previewTitle(for text: String) -> String {
+        let maxChars = 60
+        if text.count <= maxChars {
+            return text
+        }
+        // Truncate at word boundary
+        let truncated = String(text.prefix(maxChars))
+        if let lastSpace = truncated.lastIndex(of: " ") {
+            return String(truncated[..<lastSpace]) + "…"
+        }
+        return truncated + "…"
+    }
+
     // MARK: - Floating Record Button
 
     private var recordFAB: some View {
         Button {
+            recordHaptic.prepare()
             handleRecordingTap()
         } label: {
             ZStack {
@@ -588,8 +707,11 @@ struct ContentView: View {
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 12)
-            .background(.regularMaterial, in: Capsule())
-            .shadow(color: .black.opacity(0.12), radius: 12, y: 6)
+            .background(murmurSurfaceElevated(colorScheme), in: Capsule())
+            .overlay(
+                Capsule().stroke(murmurBorder(colorScheme, opacity: 0.08), lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(colorScheme == .dark ? 0.28 : 0.12), radius: 12, y: 6)
             .padding(.top, 66)
             Spacer()
         }
@@ -635,7 +757,9 @@ struct ContentView: View {
         .padding(16)
         .background(
             LinearGradient(
-                colors: [Color(.secondarySystemGroupedBackground), Color(.secondarySystemGroupedBackground).opacity(0.94)],
+                colors: colorScheme == .dark
+                    ? [murmurSurfaceElevated(colorScheme), murmurSurface(colorScheme)]
+                    : [Color(.secondarySystemGroupedBackground), Color(.secondarySystemGroupedBackground).opacity(0.94)],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             ),
@@ -643,7 +767,7 @@ struct ContentView: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .stroke(murmurAccent.opacity(0.12), lineWidth: 1)
+                .stroke(murmurBorder(colorScheme, opacity: 0.12), lineWidth: 1)
         )
         .shadow(color: murmurAccent.opacity(0.08), radius: 14, y: 8)
         .padding(.horizontal, 20)
@@ -707,36 +831,41 @@ struct ContentView: View {
 
     private func handleRecordingTap() {
         if recorder.isRecording {
+            recordHaptic.impactOccurred()
             stopAndTranscribe()
         } else {
+            recordHaptic.impactOccurred()
             startRecording()
         }
     }
 
     @discardableResult
     private func handleDictationRequest() -> Task<Void, Never> {
-        Task {
-            for _ in 0..<60 {
+        let isWarmLaunch = SharedDefaults.isModelReady()
+
+        return Task {
+            for _ in 0..<(isWarmLaunch ? 8 : 60) {
                 if transcriptionService.modelState == .loaded && recorder.hasPermission { break }
                 if transcriptionService.modelState.isError { break }
                 do {
                     try await Task.sleep(for: .milliseconds(500))
                 } catch {
-                    return // CancellationError — bail out
+                    return
                 }
             }
             guard !Task.isCancelled else { return }
             guard transcriptionService.modelState == .loaded else {
+                signalKeyboardDictationAbandoned(reason: NSLocalizedString("Murmur is still loading the speech model. Try again in a moment.", comment: "Warm dictation model not ready"))
                 presentError(NSLocalizedString("Cannot start dictation: model not loaded.", comment: "Error when dictation attempted before model is ready"))
-                isDictationFromKeyboard = false
                 return
             }
             guard recorder.hasPermission else {
+                signalKeyboardDictationAbandoned(reason: NSLocalizedString("Microphone access is required for keyboard dictation.", comment: "Keyboard dictation mic permission missing"))
                 presentError(NSLocalizedString("Cannot start dictation: no microphone permission.", comment: "Error when dictation attempted without mic permission"))
                 showMicPermissionAlert = true
-                isDictationFromKeyboard = false
                 return
             }
+            keyboardCompletionMessage = nil
             startRecording()
         }
     }
@@ -749,15 +878,49 @@ struct ContentView: View {
             if case RecordingError.noPermission = error {
                 showMicPermissionAlert = recorder.permissionDenied
             }
+            if isDictationFromKeyboard {
+                signalKeyboardDictationAbandoned(reason: error.localizedDescription)
+            }
             presentError(error.localizedDescription)
         }
     }
 
     private func stopAndTranscribe() {
         guard let audioURL = recorder.stopRecording() else {
+            if isDictationFromKeyboard {
+                signalKeyboardDictationAbandoned(reason: NSLocalizedString("No audio was recorded.", comment: "Keyboard dictation missing audio"))
+            }
             presentError(NSLocalizedString("No audio was recorded.", comment: "Error when recording produces no audio"))
             return
         }
+
+        // Verify the audio file still exists and has non-zero size before passing to transcription.
+        let fileManager = FileManager.default
+        if !fileManager.fileExists(atPath: audioURL.path) {
+            if isDictationFromKeyboard {
+                signalKeyboardDictationAbandoned(reason: NSLocalizedString("Recording file not found. Please try again.", comment: "Keyboard dictation missing audio file"))
+            }
+            presentError(NSLocalizedString("Recording file not found. Please try again.", comment: "Error when audio file is missing"))
+            return
+        }
+        do {
+            let attrs = try fileManager.attributesOfItem(atPath: audioURL.path)
+            let fileSize = attrs[.size] as? UInt64 ?? 0
+            if fileSize == 0 {
+                if isDictationFromKeyboard {
+                    signalKeyboardDictationAbandoned(reason: NSLocalizedString("Recording file is empty. Please try again.", comment: "Keyboard dictation empty audio file"))
+                }
+                presentError(NSLocalizedString("Recording file is empty. Please try again.", comment: "Error when audio file is empty"))
+                return
+            }
+        } catch {
+            if isDictationFromKeyboard {
+                signalKeyboardDictationAbandoned(reason: NSLocalizedString("Could not read the recording file. Please try again.", comment: "Keyboard dictation audio file attribute failure"))
+            }
+            presentError(NSLocalizedString("Could not read the recording file. Please try again.", comment: "Error when reading audio file attributes"))
+            return
+        }
+
         isProcessing = true
         clearErrorMessage()
 
@@ -786,19 +949,40 @@ struct ContentView: View {
                     }
 
                     if isDictationFromKeyboard {
-                        SharedDefaults.setPendingText(cleanedText)
+                        SharedDefaults.setPendingText(cleanedText, sessionID: keyboardDictationSessionID)
+                        keyboardCompletionMessage = "Transcription ready. Switch back to your previous app to paste it."
+                        successHaptic.notificationOccurred(.success)
                         try? await Task.sleep(for: .milliseconds(800))
                     }
+                } else if isDictationFromKeyboard {
+                    signalKeyboardDictationAbandoned(reason: NSLocalizedString("No speech was detected.", comment: "Keyboard dictation produced empty text"))
                 }
                 isDictationFromKeyboard = false
+                keyboardDictationSessionID = nil
             } catch is CancellationError {
+                if isDictationFromKeyboard {
+                    signalKeyboardDictationAbandoned(reason: "Dictation was cancelled.")
+                }
                 isDictationFromKeyboard = false
+                keyboardDictationSessionID = nil
             } catch {
+                if isDictationFromKeyboard {
+                    signalKeyboardDictationAbandoned(reason: error.localizedDescription)
+                }
                 isDictationFromKeyboard = false
+                keyboardDictationSessionID = nil
                 presentError(error.localizedDescription)
             }
         }
         transcriptionTask = task
+    }
+
+    private func signalKeyboardDictationAbandoned(reason: String) {
+        SharedDefaults.abandonDictationSession(reason: reason)
+        SharedDefaults.setDictationRequested(false)
+        keyboardCompletionMessage = nil
+        isDictationFromKeyboard = false
+        keyboardDictationSessionID = nil
     }
 }
 
@@ -817,6 +1001,7 @@ struct SettingsView: View {
 
     var body: some View {
         NavigationStack {
+            // presentationDetents and drag indicator are set from the presenting side in ContentView
             List {
                 Section {
                     Picker("Model", selection: $transcriptionService.selectedModel) {

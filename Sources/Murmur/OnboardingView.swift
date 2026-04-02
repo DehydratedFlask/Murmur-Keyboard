@@ -5,6 +5,7 @@ private let onboardingAccentSecondary = Color(red: 0.53, green: 0.44, blue: 1.0)
 
 struct OnboardingView: View {
     @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.openURL) private var openURL
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -15,11 +16,9 @@ struct OnboardingView: View {
     var body: some View {
         ZStack {
             LinearGradient(
-                colors: [
-                    Color(.systemBackground),
-                    onboardingAccent.opacity(0.08),
-                    Color(.secondarySystemBackground)
-                ],
+                colors: colorScheme == .dark
+                    ? [Color(red: 0.08, green: 0.08, blue: 0.10), Color(red: 0.11, green: 0.10, blue: 0.15), Color(red: 0.08, green: 0.08, blue: 0.10)]
+                    : [Color(.systemBackground), onboardingAccent.opacity(0.08), Color(.secondarySystemBackground)],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
@@ -58,7 +57,8 @@ struct OnboardingView: View {
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
-                .background(.ultraThinMaterial, in: Capsule())
+                .background(Color(.systemBackground).opacity(colorScheme == .dark ? 0.52 : 0.72), in: Capsule())
+                .overlay(Capsule().stroke(Color.primary.opacity(colorScheme == .dark ? 0.14 : 0.08), lineWidth: 1))
             }
         }
         .padding(.horizontal, 24)
@@ -120,7 +120,9 @@ struct OnboardingView: View {
             Circle()
                 .fill(
                     LinearGradient(
-                        colors: [onboardingAccent.opacity(0.18), onboardingAccentSecondary.opacity(0.10)],
+                        colors: colorScheme == .dark
+                            ? [onboardingAccent.opacity(0.16), onboardingAccentSecondary.opacity(0.08)]
+                            : [onboardingAccent.opacity(0.18), onboardingAccentSecondary.opacity(0.10)],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     )
@@ -128,7 +130,7 @@ struct OnboardingView: View {
                 .frame(width: size, height: size)
 
             Circle()
-                .strokeBorder(Color.white.opacity(0.7), lineWidth: 1)
+                .strokeBorder(colorScheme == .dark ? Color.white.opacity(0.16) : Color.white.opacity(0.7), lineWidth: 1)
                 .frame(width: size, height: size)
 
             Image(systemName: icon)
@@ -141,7 +143,7 @@ struct OnboardingView: View {
                     )
                 )
         }
-        .shadow(color: onboardingAccent.opacity(0.16), radius: 20, y: 10)
+        .shadow(color: onboardingAccent.opacity(colorScheme == .dark ? 0.10 : 0.16), radius: 20, y: 10)
     }
 
     private var howItWorksCard: some View {
@@ -152,12 +154,12 @@ struct OnboardingView: View {
         }
         .padding(22)
         .frame(maxWidth: .infinity)
-        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .background(Color(.secondarySystemBackground).opacity(colorScheme == .dark ? 0.92 : 1.0), in: RoundedRectangle(cornerRadius: 28, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 28, style: .continuous)
-                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+                .stroke(Color.primary.opacity(colorScheme == .dark ? 0.10 : 0.06), lineWidth: 1)
         )
-        .shadow(color: .black.opacity(0.05), radius: 18, y: 8)
+        .shadow(color: .black.opacity(colorScheme == .dark ? 0.22 : 0.05), radius: 18, y: 8)
     }
 
     private var setupCard: some View {
@@ -176,12 +178,12 @@ struct OnboardingView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(22)
-        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .background(Color(.secondarySystemBackground).opacity(colorScheme == .dark ? 0.92 : 1.0), in: RoundedRectangle(cornerRadius: 28, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 28, style: .continuous)
-                .stroke(onboardingAccent.opacity(0.12), lineWidth: 1)
+                .stroke(onboardingAccent.opacity(colorScheme == .dark ? 0.20 : 0.12), lineWidth: 1)
         )
-        .shadow(color: onboardingAccent.opacity(0.08), radius: 20, y: 10)
+        .shadow(color: onboardingAccent.opacity(colorScheme == .dark ? 0.12 : 0.08), radius: 20, y: 10)
     }
 
     private var bottomCTA: some View {
@@ -195,7 +197,9 @@ struct OnboardingView: View {
                     .padding(.vertical, 18)
                     .background(
                         LinearGradient(
-                            colors: [onboardingAccentSecondary, onboardingAccent],
+                            colors: colorScheme == .dark
+                                ? [onboardingAccentSecondary.opacity(0.92), onboardingAccent.opacity(0.90)]
+                                : [onboardingAccentSecondary, onboardingAccent],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         ),
@@ -217,14 +221,19 @@ struct OnboardingView: View {
         .padding(.horizontal, 24)
         .padding(.top, 18)
         .padding(.bottom, 34)
-        .background(Color(.systemBackground).opacity(0.82).blur(radius: 10))
+        .background(
+            (colorScheme == .dark
+                ? Color(.systemBackground).opacity(0.88)
+                : Color(.systemBackground).opacity(0.96))
+            .blur(radius: 10)
+        )
     }
 
     private func primaryAction() {
         if currentPage == pages.count - 1 {
-            if let settingsURL = URL(string: UIApplication.openSettingsURLString) {
-                openURL(settingsURL)
-            }
+            // Complete onboarding first so the main UI appears cleanly.
+            // The main view's keyboard setup banner guides the user to Settings
+            // without the jarring jump-away that openSettingsURLString causes.
             completeOnboarding()
         } else {
             withAnimation(reduceMotion ? .linear(duration: 0.01) : .spring(response: 0.42, dampingFraction: 0.86)) {
@@ -241,6 +250,7 @@ struct OnboardingView: View {
 }
 
 private struct OnboardingStepView: View {
+    @Environment(\.colorScheme) private var colorScheme
     let icon: String
     let title: String
 
@@ -248,7 +258,7 @@ private struct OnboardingStepView: View {
         HStack(spacing: 16) {
             ZStack {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(onboardingAccent.opacity(0.12))
+                    .fill(onboardingAccent.opacity(colorScheme == .dark ? 0.18 : 0.12))
                     .frame(width: 54, height: 54)
 
                 Image(systemName: icon)
@@ -262,7 +272,7 @@ private struct OnboardingStepView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(16)
-        .background(Color(.tertiarySystemBackground), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .background(Color(.tertiarySystemBackground).opacity(0.95), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
     }
 }
 

@@ -4,7 +4,12 @@ import SwiftUI
 struct MurmurApp: App {
     @StateObject private var appState = AppState()
     @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
-    
+    @Environment(\.scenePhase) private var scenePhase
+
+    init() {
+        SharedDefaults.setModelReady(false, progressText: nil)
+    }
+
     var body: some Scene {
         WindowGroup {
             ZStack {
@@ -21,6 +26,16 @@ struct MurmurApp: App {
             .onOpenURL { url in
                 if url.scheme == "murmur" && url.host == "dictate" {
                     appState.shouldStartDictation = true
+                }
+            }
+            .onChange(of: scenePhase) { _, newPhase in
+                switch newPhase {
+                case .active:
+                    break
+                case .inactive, .background:
+                    SharedDefaults.setModelReady(false, progressText: nil)
+                @unknown default:
+                    SharedDefaults.setModelReady(false, progressText: nil)
                 }
             }
         }
