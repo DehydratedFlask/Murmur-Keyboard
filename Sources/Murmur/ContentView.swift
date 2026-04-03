@@ -67,6 +67,8 @@ struct ContentView: View {
     @State private var transcriptionTaskID: UInt = 0
     @State private var toastDismissTask: Task<Void, Never>?
     @State private var errorDismissTask: Task<Void, Never>?
+    @State private var showCloudFallbackToast = false
+    @State private var cloudFallbackDismissTask: Task<Void, Never>?
 
     // Pulse animation for recording button
     @State private var pulseScale: CGFloat = 1.0
@@ -103,6 +105,11 @@ struct ContentView: View {
 
                 if showCopiedToast {
                     copiedToast
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+
+                if showCloudFallbackToast {
+                    cloudFallbackToast
                         .transition(.move(edge: .top).combined(with: .opacity))
                 }
 
@@ -178,6 +185,7 @@ struct ContentView: View {
             transcriptionTask?.cancel()
             toastDismissTask?.cancel()
             errorDismissTask?.cancel()
+            cloudFallbackDismissTask?.cancel()
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
             handleMemoryWarning()
@@ -236,6 +244,7 @@ struct ContentView: View {
             }
         }
         .animation(.easeInOut(duration: 0.3), value: showCopiedToast)
+        .animation(.easeInOut(duration: 0.3), value: showCloudFallbackToast)
     }
 
     // MARK: - Header Bar
@@ -668,8 +677,8 @@ struct ContentView: View {
                     .contentTransition(.symbolEffect(.replace))
             }
         }
-        .disabled(!recorder.hasPermission || transcriptionService.modelState == .loading || isProcessing)
-        .opacity((!recorder.hasPermission || transcriptionService.modelState == .loading || transcriptionService.modelState.isError || isProcessing) ? 0.55 : 1.0)
+        .disabled(!recorder.hasPermission || (!CloudTranscriptionService.isReady && transcriptionService.modelState == .loading) || isProcessing)
+        .opacity((!recorder.hasPermission || (!CloudTranscriptionService.isReady && (transcriptionService.modelState == .loading || transcriptionService.modelState.isError)) || isProcessing) ? 0.55 : 1.0)
         .onChange(of: recorder.isRecording) {
             if recorder.isRecording {
                 pulseScale = 1.18
@@ -688,6 +697,29 @@ struct ContentView: View {
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundStyle(.green)
                 Text("Copied to clipboard")
+                    .font(.subheadline.weight(.medium))
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
+            .background(murmurSurfaceElevated(colorScheme), in: Capsule())
+            .overlay(
+                Capsule().stroke(murmurBorder(colorScheme, opacity: 0.08), lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(colorScheme == .dark ? 0.28 : 0.12), radius: 12, y: 6)
+            .padding(.top, 66)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    // MARK: - Cloud Fallback Toast
+
+    private var cloudFallbackToast: some View {
+        VStack {
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.icloud")
+                    .foregroundStyle(.orange)
+                Text("Cloud unavailable — used on-device")
                     .font(.subheadline.weight(.medium))
             }
             .padding(.horizontal, 20)
@@ -826,7 +858,8 @@ struct ContentView: View {
         } else {
             recordHaptic.impactOccurred()
             // If model was unloaded (e.g. by a memory warning), reload it first
-            if transcriptionService.modelState == .unloaded {
+            // Cloud-ready users can start recording immediately
+            if transcriptionService.modelState == .unloaded && !CloudTranscriptionService.isReady {
                 Task {
                     await transcriptionService.loadModel()
                     if transcriptionService.modelState == .loaded {
@@ -834,6 +867,10 @@ struct ContentView: View {
                     }
                 }
             } else {
+                // Also kick off model load in the background for fallback
+                if transcriptionService.modelState == .unloaded {
+                    Task { await transcriptionService.loadModel() }
+                }
                 startRecording()
             }
         }
@@ -854,7 +891,7 @@ struct ContentView: View {
                 }
             }
             guard !Task.isCancelled else { return }
-            guard transcriptionService.modelState == .loaded else {
+            guard transcriptionService.modelState == .loaded || CloudTranscriptionService.isReady else {
                 signalKeyboardDictationAbandoned(reason: NSLocalizedString("Murmur is still loading the speech model. Try again in a moment.", comment: "Warm dictation model not ready"))
                 presentError(NSLocalizedString("Cannot start dictation: model not loaded.", comment: "Error when dictation attempted before model is ready"))
                 return
@@ -928,6 +965,7 @@ struct ContentView: View {
         transcriptionTask?.cancel()
         transcriptionTaskID &+= 1
         let myTaskID = transcriptionTaskID
+        let useCloud = CloudTranscriptionService.isReady
         let task = Task {
             defer {
                 // Only clear if this is still the current task (a newer
@@ -939,8 +977,34 @@ struct ContentView: View {
                 recorder.cleanupRecording()
             }
             do {
-                let rawText = try await transcriptionService.transcribe(audioURL: audioURL)
+                var rawText: String
+                var didFallback = false
+
+                if useCloud {
+                    do {
+                        rawText = try await CloudTranscriptionService.transcribe(audioURL: audioURL)
+                    } catch {
+                        // Cloud failed — fall back to local WhisperKit
+                        print("[Murmur] Cloud transcription failed: \(error.localizedDescription). Falling back to on-device.")
+                        rawText = try await transcriptionService.transcribe(audioURL: audioURL)
+                        didFallback = true
+                    }
+                } else {
+                    rawText = try await transcriptionService.transcribe(audioURL: audioURL)
+                }
+
                 let cleanedText = TextProcessor.process(rawText)
+
+                if didFallback {
+                    showCloudFallbackToast = true
+                    cloudFallbackDismissTask?.cancel()
+                    cloudFallbackDismissTask = Task {
+                        try? await Task.sleep(for: .seconds(3))
+                        if !Task.isCancelled {
+                            showCloudFallbackToast = false
+                        }
+                    }
+                }
 
                 if !cleanedText.isEmpty {
                     let entry = TranscriptionEntry(text: cleanedText)
@@ -1040,8 +1104,24 @@ enum AppearanceMode: String, CaseIterable, Identifiable {
 struct SettingsView: View {
     @ObservedObject var transcriptionService: TranscriptionService
     @AppStorage("appearanceMode") private var appearanceMode: String = AppearanceMode.auto.rawValue
+    @AppStorage("cloudDictationEnabled") private var cloudDictationEnabled = false
+    @AppStorage("cloudProvider") private var cloudProviderRaw: String = CloudProvider.groq.rawValue
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
+
+    // Cloud dictation UI state
+    @State private var apiKeyInput: String = ""
+    @State private var cloudStatus: CloudConnectionStatus = .notConfigured
+    @State private var showPrivacyDisclosure = false
+    @State private var pendingCloudEnable = false
+    @State private var pendingProviderChange: CloudProvider?
+    @State private var testTask: Task<Void, Never>?
+    @State private var availableModels: [CloudModel] = []
+    @State private var selectedCloudModelID: String = ""
+
+    private var selectedProvider: CloudProvider {
+        CloudProvider(rawValue: cloudProviderRaw) ?? .groq
+    }
 
     private var selectedMode: Binding<AppearanceMode> {
         Binding(
@@ -1077,7 +1157,7 @@ struct SettingsView: View {
                 }
                 .pickerStyle(.inline)
             } header: {
-                Text("Whisper Model")
+                Text("On-Device Model")
             } footer: {
                 Text("Tiny is fastest with slightly lower accuracy. Base is more accurate but uses more memory.")
             }
@@ -1090,6 +1170,140 @@ struct SettingsView: View {
                     }
                 }
                 .disabled(transcriptionService.modelState == .loading || transcriptionService.isTranscribing)
+            }
+
+            // MARK: - Cloud Dictation Section
+
+            Section {
+                Toggle("Use Cloud Dictation", isOn: Binding(
+                    get: { cloudDictationEnabled },
+                    set: { newValue in
+                        if newValue {
+                            // Check if disclosure has been accepted for current provider
+                            if CloudTranscriptionService.isDisclosureAccepted(for: selectedProvider) {
+                                cloudDictationEnabled = true
+                            } else {
+                                pendingCloudEnable = true
+                                pendingProviderChange = nil
+                                showPrivacyDisclosure = true
+                            }
+                        } else {
+                            cloudDictationEnabled = false
+                        }
+                    }
+                ))
+
+                if cloudDictationEnabled {
+                    Picker("Provider", selection: Binding(
+                        get: { selectedProvider },
+                        set: { newProvider in
+                            if CloudTranscriptionService.isDisclosureAccepted(for: newProvider) {
+                                cloudProviderRaw = newProvider.rawValue
+                                loadStateForCurrentProvider()
+                                refreshStatus()
+                            } else {
+                                pendingProviderChange = newProvider
+                                pendingCloudEnable = false
+                                showPrivacyDisclosure = true
+                            }
+                        }
+                    )) {
+                        ForEach(CloudProvider.allCases) { provider in
+                            HStack(spacing: 6) {
+                                Text(provider.displayName)
+                                if provider.isRecommended {
+                                    Text("Recommended")
+                                        .font(.caption2.weight(.semibold))
+                                        .foregroundStyle(.white)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(murmurAccent, in: Capsule())
+                                }
+                            }
+                            .tag(provider)
+                        }
+                    }
+
+                    // API key helper link
+                    Button {
+                        openURL(selectedProvider.apiKeyURL)
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "key.fill")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(selectedProvider.isRecommended ? murmurAccent : .secondary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(selectedProvider.apiKeyCTA)
+                                    .font(.subheadline.weight(.medium))
+                                    .foregroundStyle(murmurAccent)
+                                Text(selectedProvider.apiKeyHelperText)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            Spacer(minLength: 4)
+                            Image(systemName: "arrow.up.right")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+
+                    SecureField("API Key", text: $apiKeyInput)
+                        .textContentType(.password)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .onChange(of: apiKeyInput) {
+                            CloudTranscriptionService.setAPIKey(apiKeyInput, for: selectedProvider)
+                            refreshStatus()
+                        }
+
+                    if !availableModels.isEmpty {
+                        Picker("Model", selection: $selectedCloudModelID) {
+                            ForEach(availableModels) { model in
+                                Text(model.displayName).tag(model.id)
+                            }
+                        }
+                        .onChange(of: selectedCloudModelID) {
+                            CloudTranscriptionService.setSelectedModel(selectedCloudModelID, for: selectedProvider)
+                        }
+                    }
+
+                    HStack {
+                        Button {
+                            testConnection()
+                        } label: {
+                            HStack(spacing: 6) {
+                                if cloudStatus == .testing {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                } else {
+                                    Image(systemName: "arrow.triangle.2.circlepath")
+                                }
+                                Text("Test Connection")
+                            }
+                        }
+                        .disabled(apiKeyInput.isEmpty || cloudStatus == .testing)
+
+                        Spacer()
+
+                        HStack(spacing: 4) {
+                            Image(systemName: cloudStatus.symbolName)
+                                .foregroundStyle(colorForStatus(cloudStatus))
+                            Text(cloudStatus.displayText)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            } header: {
+                Text("Cloud Dictation")
+            } footer: {
+                if cloudDictationEnabled {
+                    Text("Audio is sent to \(selectedProvider.displayName) for transcription. Falls back to on-device if cloud fails.")
+                } else {
+                    Text("Send audio to a cloud provider for faster, more accurate transcription. Your API key is stored securely on-device.")
+                }
             }
 
             Section {
@@ -1123,9 +1337,11 @@ struct SettingsView: View {
 
             Section {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Murmur v2.3")
+                    Text("Murmur v2.4")
                         .font(.headline)
-                    Text("On-device speech-to-text powered by WhisperKit.\nNo data leaves your device.")
+                    Text(cloudDictationEnabled
+                         ? "Speech-to-text via \(selectedProvider.displayName). On-device fallback always available."
+                         : "On-device speech-to-text powered by WhisperKit.\nNo data leaves your device.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -1135,6 +1351,214 @@ struct SettingsView: View {
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
         .tint(murmurAccent)
+        .onAppear {
+            loadStateForCurrentProvider()
+            refreshStatus()
+        }
+        .onDisappear {
+            testTask?.cancel()
+        }
+        .sheet(isPresented: $showPrivacyDisclosure) {
+            // On dismiss without accepting, revert
+            if pendingCloudEnable {
+                pendingCloudEnable = false
+            }
+            if pendingProviderChange != nil {
+                pendingProviderChange = nil
+            }
+        } content: {
+            CloudPrivacyDisclosureSheet(
+                provider: pendingProviderChange ?? selectedProvider,
+                onAccept: {
+                    let targetProvider = pendingProviderChange ?? selectedProvider
+                    CloudTranscriptionService.acceptDisclosure(for: targetProvider)
+                    if pendingCloudEnable {
+                        cloudDictationEnabled = true
+                        pendingCloudEnable = false
+                    }
+                    if let newProvider = pendingProviderChange {
+                        cloudProviderRaw = newProvider.rawValue
+                        loadStateForCurrentProvider()
+                        refreshStatus()
+                        pendingProviderChange = nil
+                    }
+                    showPrivacyDisclosure = false
+                },
+                onCancel: {
+                    pendingCloudEnable = false
+                    pendingProviderChange = nil
+                    showPrivacyDisclosure = false
+                }
+            )
+        }
+    }
+
+    // MARK: - Cloud Dictation Helpers
+
+    private func loadStateForCurrentProvider() {
+        apiKeyInput = CloudTranscriptionService.apiKey(for: selectedProvider) ?? ""
+        selectedCloudModelID = CloudTranscriptionService.selectedModel(for: selectedProvider)
+        loadCachedModels()
+    }
+
+    /// Kept as a convenience alias used by provider-change callsites.
+    private func loadAPIKeyForCurrentProvider() {
+        loadStateForCurrentProvider()
+    }
+
+    private func loadCachedModels() {
+        if let cached = CloudTranscriptionService.cachedModels(for: selectedProvider) {
+            availableModels = cached
+            // Ensure selectedCloudModelID is still valid
+            if !cached.contains(where: { $0.id == selectedCloudModelID }) {
+                selectedCloudModelID = cached.first?.id ?? selectedProvider.defaultModelID
+                CloudTranscriptionService.setSelectedModel(selectedCloudModelID, for: selectedProvider)
+            }
+        } else {
+            availableModels = []
+        }
+    }
+
+    private func refreshStatus() {
+        if apiKeyInput.isEmpty {
+            cloudStatus = .notConfigured
+            availableModels = []
+        } else {
+            // Don't reset to notConfigured if we already have a known status
+            // — let the user tap Test Connection to re-verify.
+            if cloudStatus == .notConfigured {
+                cloudStatus = .notConfigured
+            }
+        }
+    }
+
+    private func testConnection() {
+        testTask?.cancel()
+        cloudStatus = .testing
+        let provider = selectedProvider
+        testTask = Task {
+            let (status, models) = await CloudTranscriptionService.testConnection(for: provider)
+            guard !Task.isCancelled else { return }
+            cloudStatus = status
+
+            if let models, !models.isEmpty {
+                availableModels = models
+                // If current selection isn't in the fetched list, pick the best default
+                if !models.contains(where: { $0.id == selectedCloudModelID }) {
+                    selectedCloudModelID = models.first?.id ?? provider.defaultModelID
+                    CloudTranscriptionService.setSelectedModel(selectedCloudModelID, for: provider)
+                }
+            }
+        }
+    }
+
+    private func colorForStatus(_ status: CloudConnectionStatus) -> Color {
+        switch status {
+        case .notConfigured: return .secondary
+        case .connected: return .green
+        case .invalidKey: return .red
+        case .testing: return murmurAccent
+        case .error: return .orange
+        }
+    }
+}
+
+// MARK: - Privacy Disclosure Sheet
+
+struct CloudPrivacyDisclosureSheet: View {
+    let provider: CloudProvider
+    let onAccept: () -> Void
+    let onCancel: () -> Void
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    // Icon
+                    HStack {
+                        Spacer()
+                        ZStack {
+                            Circle()
+                                .fill(Color.orange.opacity(0.12))
+                                .frame(width: 72, height: 72)
+                            Image(systemName: "lock.shield.fill")
+                                .font(.system(size: 32, weight: .semibold))
+                                .foregroundStyle(.orange)
+                        }
+                        Spacer()
+                    }
+                    .padding(.top, 8)
+
+                    Text("Cloud Dictation Privacy Notice")
+                        .font(.title2.weight(.bold))
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity)
+
+                    Text("When you enable Cloud Dictation, your voice recordings will be sent to \(provider.displayName) for transcription. This means your audio data will leave your device and be processed on external servers.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineSpacing(4)
+
+                    Text("Murmur does not store or have access to your API key or audio data on our servers. Your API key is stored only on your device.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineSpacing(4)
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("By continuing, you acknowledge that:")
+                            .font(.subheadline.weight(.semibold))
+
+                        BulletPoint("Your voice recordings will be transmitted over the internet")
+                        BulletPoint("\(provider.displayName)'s privacy policy applies to your data")
+                        BulletPoint("You are responsible for your own API key and usage")
+                    }
+
+                    Text("This feature is optional. On-device transcription remains available at all times.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineSpacing(3)
+                        .padding(.top, 4)
+
+                    Spacer(minLength: 20)
+
+                    VStack(spacing: 12) {
+                        Button(action: onAccept) {
+                            Text("I Understand & Agree")
+                                .font(.headline)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 14)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(murmurAccent)
+
+                        Button("Cancel", role: .cancel, action: onCancel)
+                            .font(.subheadline)
+                    }
+                    .padding(.bottom, 16)
+                }
+                .padding(.horizontal, 24)
+            }
+            .navigationBarTitleDisplayMode(.inline)
+            .interactiveDismissDisabled()
+        }
+    }
+}
+
+private struct BulletPoint: View {
+    let text: String
+    init(_ text: String) { self.text = text }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text("•")
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(.secondary)
+            Text(text)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
     }
 }
 

@@ -3,13 +3,14 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 63;
+	objectVersion = 77;
 	objects = {
 
 /* Begin PBXBuildFile section */
 		04CB3735D6F4B13A618988F1 /* KeyboardViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D9B6369C3F5E2AFE775F256 /* KeyboardViewController.swift */; };
 		0709B9D315755E7B821D9759 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E49B8BFD4899D49213E66351 /* ContentView.swift */; };
 		0D2E35D28D901F63E2FF6E94 /* KeyboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4613EE0D4740D47B11050CDB /* KeyboardView.swift */; };
+		1297502E66E35033129E63F9 /* DarwinNotificationCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BA6007B1162B90620FB693D /* DarwinNotificationCenter.swift */; };
 		1E0C52CD9D03926CC52517B3 /* TranscriptionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB01809BC96EC988C7C54E58 /* TranscriptionService.swift */; };
 		2F417D0F83F738131D8B2DE1 /* MurmurKeyboard.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 05AD0D5776C091609CEE64DC /* MurmurKeyboard.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		3FB2E1F1BC1D7801B402C165 /* AudioRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD15486FE9E2405472EDB018 /* AudioRecorder.swift */; };
@@ -21,8 +22,9 @@
 		59F568EC577699F68FA4AE92 /* TranscriptionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00B3AA754090800C4A190AB /* TranscriptionStore.swift */; };
 		5B214DAB1EF667EA1473632C /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 254C34AE029C127E98D897BF /* PrivacyInfo.xcprivacy */; };
 		6DA49FB9CCA842FA4B2688C0 /* MurmurApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED35761EBF7EF881FA0E7BB9 /* MurmurApp.swift */; };
-		A1D2E3F4B5C6D7E8F9A0B1C2 /* DarwinNotificationCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3E4F5A6B7C8D9E0F1A2B3C4 /* DarwinNotificationCenter.swift */; };
-		B2C3D4E5F6A7B8C9D0E1F2A3 /* DarwinNotificationCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3E4F5A6B7C8D9E0F1A2B3C4 /* DarwinNotificationCenter.swift */; };
+		7801BBB826DED11D57466728 /* CloudTranscriptionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DC6424CB3B8F16902AB37D2 /* CloudTranscriptionService.swift */; };
+		97E069AE955DE68E4EF903AD /* DarwinNotificationCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BA6007B1162B90620FB693D /* DarwinNotificationCenter.swift */; };
+		BBF5BD7C71202A5AC611F0D6 /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9ED87487A4B876A95851A155 /* KeychainHelper.swift */; };
 		C944553A8C6BBDA2511FB912 /* SharedDefaults.swift in Sources */ = {isa = PBXBuildFile; fileRef = C123EC332E2AAB14BB4C3800 /* SharedDefaults.swift */; };
 		CCA6160297EC5A1677B8106D /* WhisperKit in Frameworks */ = {isa = PBXBuildFile; productRef = A2BDAA3B98771B1C1E1439F5 /* WhisperKit */; };
 		F836AB23661F014B05BA9F2F /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5FBD1FE5F80F062DB789E32A /* OnboardingView.swift */; };
@@ -56,21 +58,23 @@
 /* Begin PBXFileReference section */
 		05AD0D5776C091609CEE64DC /* MurmurKeyboard.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = MurmurKeyboard.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		1A7366E26F2E6709D6679C88 /* TextProcessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextProcessor.swift; sourceTree = "<group>"; };
-		254C34AE029C127E98D897BF /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		1BA6007B1162B90620FB693D /* DarwinNotificationCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DarwinNotificationCenter.swift; sourceTree = "<group>"; };
+		1DC6424CB3B8F16902AB37D2 /* CloudTranscriptionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudTranscriptionService.swift; sourceTree = "<group>"; };
+		254C34AE029C127E98D897BF /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		3E76F65BA5EB338EDBE2C26B /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/Localizable.strings; sourceTree = "<group>"; };
 		45C181BC358DD79901DD4BE0 /* MenuView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuView.swift; sourceTree = "<group>"; };
 		4613EE0D4740D47B11050CDB /* KeyboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardView.swift; sourceTree = "<group>"; };
-		4FB598387040EBBE3BF5FF30 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		4FB598387040EBBE3BF5FF30 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		5FBD1FE5F80F062DB789E32A /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
 		705220A3846AC6270FEBBC24 /* Murmur.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Murmur.entitlements; sourceTree = "<group>"; };
 		8D9B6369C3F5E2AFE775F256 /* KeyboardViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardViewController.swift; sourceTree = "<group>"; };
+		9ED87487A4B876A95851A155 /* KeychainHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainHelper.swift; sourceTree = "<group>"; };
 		A00B3AA754090800C4A190AB /* TranscriptionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionStore.swift; sourceTree = "<group>"; };
 		BA0E563F85E519D1E62A21CB /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		BADFC419D76FE3CB660FE61F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		C123EC332E2AAB14BB4C3800 /* SharedDefaults.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedDefaults.swift; sourceTree = "<group>"; };
 		C834EC374C4A986C47F46292 /* Murmur.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Murmur.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		CED537A7256CD6F3D7ED94AC /* MurmurKeyboard.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = MurmurKeyboard.entitlements; sourceTree = "<group>"; };
-		D3E4F5A6B7C8D9E0F1A2B3C4 /* DarwinNotificationCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DarwinNotificationCenter.swift; sourceTree = "<group>"; };
 		DB01809BC96EC988C7C54E58 /* TranscriptionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionService.swift; sourceTree = "<group>"; };
 		DD15486FE9E2405472EDB018 /* AudioRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRecorder.swift; sourceTree = "<group>"; };
 		E49B8BFD4899D49213E66351 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
@@ -102,7 +106,7 @@
 		2DB434EEFB0EF7330B954FCE /* Shared */ = {
 			isa = PBXGroup;
 			children = (
-				D3E4F5A6B7C8D9E0F1A2B3C4 /* DarwinNotificationCenter.swift */,
+				1BA6007B1162B90620FB693D /* DarwinNotificationCenter.swift */,
 				C123EC332E2AAB14BB4C3800 /* SharedDefaults.swift */,
 			);
 			name = Shared;
@@ -137,8 +141,10 @@
 			children = (
 				FBF74434C602C47E5BAA6CED /* Assets.xcassets */,
 				DD15486FE9E2405472EDB018 /* AudioRecorder.swift */,
+				1DC6424CB3B8F16902AB37D2 /* CloudTranscriptionService.swift */,
 				E49B8BFD4899D49213E66351 /* ContentView.swift */,
 				BA0E563F85E519D1E62A21CB /* Info.plist */,
+				9ED87487A4B876A95851A155 /* KeychainHelper.swift */,
 				856CF47B02A85606D9556C99 /* Localizable.strings */,
 				45C181BC358DD79901DD4BE0 /* MenuView.swift */,
 				705220A3846AC6270FEBBC24 /* Murmur.entitlements */,
@@ -228,6 +234,7 @@
 			packageReferences = (
 				9AD1147740F2028ECA243454 /* XCRemoteSwiftPackageReference "WhisperKit" */,
 			);
+			preferredProjectObjectVersion = 77;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
@@ -264,11 +271,13 @@
 			buildActionMask = 2147483647;
 			files = (
 				3FB2E1F1BC1D7801B402C165 /* AudioRecorder.swift in Sources */,
+				7801BBB826DED11D57466728 /* CloudTranscriptionService.swift in Sources */,
 				0709B9D315755E7B821D9759 /* ContentView.swift in Sources */,
+				1297502E66E35033129E63F9 /* DarwinNotificationCenter.swift in Sources */,
+				BBF5BD7C71202A5AC611F0D6 /* KeychainHelper.swift in Sources */,
 				408A877D4281761C34883CB3 /* MenuView.swift in Sources */,
 				6DA49FB9CCA842FA4B2688C0 /* MurmurApp.swift in Sources */,
 				F836AB23661F014B05BA9F2F /* OnboardingView.swift in Sources */,
-				A1D2E3F4B5C6D7E8F9A0B1C2 /* DarwinNotificationCenter.swift in Sources */,
 				C944553A8C6BBDA2511FB912 /* SharedDefaults.swift in Sources */,
 				421B9904F6646C1B26B88CE8 /* TextProcessor.swift in Sources */,
 				1E0C52CD9D03926CC52517B3 /* TranscriptionService.swift in Sources */,
@@ -280,9 +289,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				97E069AE955DE68E4EF903AD /* DarwinNotificationCenter.swift in Sources */,
 				0D2E35D28D901F63E2FF6E94 /* KeyboardView.swift in Sources */,
 				04CB3735D6F4B13A618988F1 /* KeyboardViewController.swift in Sources */,
-				B2C3D4E5F6A7B8C9D0E1F2A3 /* DarwinNotificationCenter.swift in Sources */,
 				501F131FDE7524B1A74D3824 /* SharedDefaults.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
