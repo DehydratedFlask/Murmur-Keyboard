@@ -1,80 +1,54 @@
 import SwiftUI
 
-/// The main SwiftUI keyboard view — QWERTY layout with dictation bar, predictive text, and key popups.
+/// The main SwiftUI keyboard view — native iOS QWERTY layout with a
+/// Murmur dictation button integrated into the predictive-text row.
 struct KeyboardView: View {
     @ObservedObject var viewModel: KeyboardViewModel
 
-    @Environment(\.colorScheme) private var envColorScheme
+    @Environment(\.colorScheme) private var colorScheme
     @State private var backspaceLongPressed = false
 
-    // MARK: - Layout Constants
+    // MARK: - Native iOS Keyboard Layout Constants
 
     private let keySpacing: CGFloat = 6
-    private let rowSpacing: CGFloat = 10
+    private let rowSpacing: CGFloat = 11
     private let keyHeight: CGFloat = 42
     private let edgePadding: CGFloat = 3
+    private let middleRowInset: CGFloat = 18
+    /// Height of Apple's predictive text / suggestion row
+    private let predictionRowHeight: CGFloat = 36
 
     // MARK: - Key Definitions
 
-    private var letterRows: [[String]] {
-        [
-            ["Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P"],
-            ["A", "S", "D", "F", "G", "H", "J", "K", "L"],
-            ["Z", "X", "C", "V", "B", "N", "M"],
-        ]
-    }
+    private let letterRow1 = ["Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P"]
+    private let letterRow2 = ["A", "S", "D", "F", "G", "H", "J", "K", "L"]
+    private let letterRow3 = ["Z", "X", "C", "V", "B", "N", "M"]
 
-    private var numberRows: [[String]] {
-        [
-            ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"],
-            ["-", "/", ":", ";", "(", ")", "$", "&", "@", "\""],
-            [".", ",", "?", "!", "'"],
-        ]
-    }
+    private let numberRow1 = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]
+    private let numberRow2 = ["-", "/", ":", ";", "(", ")", "$", "&", "@", "\""]
+    private let numberRow3 = [".", ",", "?", "!", "'"]
 
-    private var symbolRows: [[String]] {
-        [
-            ["[", "]", "{", "}", "#", "%", "^", "*", "+", "="],
-            ["_", "\\", "|", "~", "<", ">", "€", "£", "¥", "•"],
-            [".", ",", "?", "!", "'"],
-        ]
-    }
+    private let symbolRow1 = ["[", "]", "{", "}", "#", "%", "^", "*", "+", "="]
+    private let symbolRow2 = ["_", "\\", "|", "~", "<", ">", "€", "£", "¥", "•"]
+    private let symbolRow3 = [".", ",", "?", "!", "'"]
 
     // MARK: - Body
 
     var body: some View {
-        ZStack(alignment: .top) {
-            VStack(spacing: 0) {
-                VStack(spacing: 2) {
-                    // Handoff error banner
-                    if let error = viewModel.handoffError {
-                        Text(error)
-                            .font(.system(size: 10.5, weight: .medium))
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 3)
-                            .frame(maxWidth: .infinity)
-                            .background(Color.red.opacity(envColorScheme == .dark ? 0.72 : 0.85))
-                    }
+        VStack(spacing: 0) {
+            // Error / warning banners (only when needed)
+            banners
 
-                    // Full Access required banner
-                    if !viewModel.hasFullAccess {
-                        Text("Enable Full Access in Settings \u{2192} Keyboards to use dictation.")
-                            .font(.system(size: 10.5, weight: .medium))
-                            .foregroundColor(envColorScheme == .dark ? Color.orange.opacity(0.95) : .orange)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 3)
-                            .frame(maxWidth: .infinity)
-                            .background(keyboardBackground.opacity(envColorScheme == .dark ? 0.96 : 0.9))
-                    }
-                }
+            // Predictive-text row with Murmur dictation button
+            predictionRow
 
-                // Dictation bar
-                dictationBar
+            // Thin separator matching Apple's divider between suggestions and keys
+            Rectangle()
+                .fill(separatorColor)
+                .frame(height: 0.5)
 
-                // Predictive text bar
-                predictiveTextBar
-
+            // Standard keyboard rows
+            VStack(spacing: rowSpacing) {
                 if viewModel.showNumbers || viewModel.showSymbols {
                     numbersOrSymbolsLayout
                 } else {
@@ -83,140 +57,122 @@ struct KeyboardView: View {
                 bottomRow
             }
             .padding(.horizontal, edgePadding)
-            .padding(.top, 4)
-            .padding(.bottom, 4)
-            .background(
-                LinearGradient(
-                    colors: envColorScheme == .dark
-                        ? [Color(red: 0.09, green: 0.09, blue: 0.10), Color(red: 0.13, green: 0.13, blue: 0.14)]
-                        : [keyboardBackground, keyboardBackground.opacity(0.92)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-            )
-
-            // Key popup overlay — extends above keyboard bounds
-            keyPopupOverlay
+            .padding(.top, 8)
+            .padding(.bottom, 3)
         }
+        .background(keyboardBackground)
     }
 
-    // MARK: - Dictation Bar
-
-    private var dictationBar: some View {
-        Button {
-            viewModel.openMurmurForDictation()
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: viewModel.isModelWarm ? "bolt.fill" : "hourglass")
-                    .font(.system(size: 12, weight: .semibold))
-                Text(viewModel.isModelWarm ? "Dictation ready" : "Loading model")
-                    .font(.system(size: 13, weight: .medium))
-                Spacer(minLength: 8)
-                Text(viewModel.dictationStatusText)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(viewModel.isModelWarm ? Color.green : .secondary)
-            }
-            .foregroundColor(viewModel.hasFullAccess ? (envColorScheme == .dark ? Color.accentColor.opacity(0.95) : Color.accentColor) : .gray)
-            .padding(.horizontal, 10)
-            .frame(maxWidth: .infinity)
-            .frame(height: 32)
-            .background(barBackground)
-            .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).stroke(keyBorderColor, lineWidth: 1))
-            .cornerRadius(6)
-        }
-        .disabled(!viewModel.hasFullAccess)
-        .padding(.horizontal, 2)
-        .padding(.top, 4)
-        .padding(.bottom, 2)
-        .accessibilityLabel("Start dictation")
-        .accessibilityHint(viewModel.hasFullAccess ? "Opens the Murmur app to capture speech and return the transcription here." : "Enable Full Access before starting dictation.")
-    }
-
-    // MARK: - Predictive Text Bar
+    // MARK: - Banners (error / full-access warning)
 
     @ViewBuilder
-    private var predictiveTextBar: some View {
-        if viewModel.suggestions.allSatisfy(\.isEmpty) {
-            HStack(spacing: 8) {
-                Image(systemName: "sparkles")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(envColorScheme == .dark ? Color.white.opacity(0.7) : .secondary)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Suggestions appear as you type")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(keyTextColor.opacity(0.82))
-                    Text("Pick one when Murmur has a match")
-                        .font(.system(size: 10.5, weight: .medium))
-                        .foregroundColor(Color(.tertiaryLabel))
-                }
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 12)
-            .frame(maxWidth: .infinity)
-            .frame(height: 34)
-            .background(barBackground)
-            .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).stroke(keyBorderColor, lineWidth: 1))
-            .cornerRadius(6)
-            .padding(.horizontal, 2)
-            .padding(.bottom, 4)
-        } else {
-            HStack(spacing: 0) {
-                ForEach(0..<3, id: \.self) { index in
-                    if index > 0 {
-                        Divider()
-                            .frame(height: 20)
-                    }
-                    Button {
-                        let suggestion = index < viewModel.suggestions.count ? viewModel.suggestions[index] : ""
-                        if !suggestion.isEmpty {
-                            viewModel.applySuggestion(suggestion)
-                        }
-                    } label: {
-                        Text(index < viewModel.suggestions.count ? viewModel.suggestions[index] : "")
-                            .font(.system(size: 14))
-                            .lineLimit(1)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 34)
-                            .foregroundColor(keyTextColor)
-                    }
-                    .disabled(index >= viewModel.suggestions.count || viewModel.suggestions[index].isEmpty)
-                    .accessibilityLabel(index < viewModel.suggestions.count ? viewModel.suggestions[index] : "No suggestion")
-                }
-            }
-            .background(barBackground)
-            .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).stroke(keyBorderColor, lineWidth: 1))
-            .cornerRadius(6)
-            .padding(.horizontal, 2)
-            .padding(.bottom, 4)
+    private var banners: some View {
+        if let error = viewModel.handoffError {
+            Text(error)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(.white)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 4)
+                .frame(maxWidth: .infinity)
+                .background(Color.red.opacity(0.85))
+        }
+
+        if !viewModel.hasFullAccess {
+            Text("Enable Full Access in Settings → Keyboards to use dictation.")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(.orange)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 4)
+                .frame(maxWidth: .infinity)
+                .background(keyboardBackground)
         }
     }
 
-    // MARK: - Letters Layout
+    // MARK: - Prediction Row (with Murmur logo button)
+
+    /// Mimics Apple's predictive-text suggestion row.
+    /// Center slot holds the Murmur dictation button; side slots are empty
+    /// (like a keyboard with no active suggestions).
+    private var predictionRow: some View {
+        HStack(spacing: 0) {
+            // Left slot (empty, matches Apple's 3-slot layout)
+            Color.clear
+                .frame(maxWidth: .infinity)
+                .frame(height: predictionRowHeight)
+
+            // Divider
+            Rectangle()
+                .fill(separatorColor)
+                .frame(width: 0.5, height: 18)
+
+            // Center slot — Murmur dictation button
+            Button {
+                viewModel.openMurmurForDictation()
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "waveform")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text("Murmur")
+                        .font(.system(size: 14, weight: .medium))
+                }
+                .foregroundStyle(murmurButtonColor)
+                .frame(maxWidth: .infinity)
+                .frame(height: predictionRowHeight)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!viewModel.hasFullAccess)
+            .accessibilityLabel("Start Murmur dictation")
+            .accessibilityHint(viewModel.hasFullAccess
+                ? "Opens the Murmur app to capture speech."
+                : "Enable Full Access to use dictation.")
+
+            // Divider
+            Rectangle()
+                .fill(separatorColor)
+                .frame(width: 0.5, height: 18)
+
+            // Right slot — model status indicator
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(viewModel.isModelWarm ? Color.green : Color.orange)
+                    .frame(width: 6, height: 6)
+                Text(viewModel.isModelWarm ? "Ready" : "Loading")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: predictionRowHeight)
+        }
+        .background(predictionRowBackground)
+    }
+
+    // MARK: - Letters Layout (matches Apple QWERTY)
 
     private var lettersLayout: some View {
         VStack(spacing: rowSpacing) {
-            // Row 1: Q-P
             HStack(spacing: keySpacing) {
-                ForEach(letterRows[0], id: \.self) { key in
+                ForEach(letterRow1, id: \.self) { key in
                     letterKey(key)
                 }
             }
 
-            // Row 2: A-L
             HStack(spacing: keySpacing) {
-                ForEach(letterRows[1], id: \.self) { key in
+                ForEach(letterRow2, id: \.self) { key in
                     letterKey(key)
                 }
             }
+            .padding(.horizontal, middleRowInset)
 
-            // Row 3: Shift + Z-M + Backspace
             HStack(spacing: keySpacing) {
                 shiftKey
+                Spacer(minLength: 0)
                 HStack(spacing: keySpacing) {
-                    ForEach(letterRows[2], id: \.self) { key in
+                    ForEach(letterRow3, id: \.self) { key in
                         letterKey(key)
                     }
                 }
+                Spacer(minLength: 0)
                 backspaceKey
             }
         }
@@ -225,26 +181,30 @@ struct KeyboardView: View {
     // MARK: - Numbers/Symbols Layout
 
     private var numbersOrSymbolsLayout: some View {
-        let rows = viewModel.showSymbols ? symbolRows : numberRows
+        let row1 = viewModel.showSymbols ? symbolRow1 : numberRow1
+        let row2 = viewModel.showSymbols ? symbolRow2 : numberRow2
+        let row3 = viewModel.showSymbols ? symbolRow3 : numberRow3
 
         return VStack(spacing: rowSpacing) {
             HStack(spacing: keySpacing) {
-                ForEach(rows[0], id: \.self) { key in
+                ForEach(row1, id: \.self) { key in
                     characterKey(key)
                 }
             }
             HStack(spacing: keySpacing) {
-                ForEach(rows[1], id: \.self) { key in
+                ForEach(row2, id: \.self) { key in
                     characterKey(key)
                 }
             }
             HStack(spacing: keySpacing) {
                 symbolToggleKey
+                Spacer(minLength: 0)
                 HStack(spacing: keySpacing) {
-                    ForEach(rows[2], id: \.self) { key in
+                    ForEach(row3, id: \.self) { key in
                         characterKey(key)
                     }
                 }
+                Spacer(minLength: 0)
                 backspaceKey
             }
         }
@@ -255,73 +215,48 @@ struct KeyboardView: View {
     private var bottomRow: some View {
         HStack(spacing: keySpacing) {
             numberToggleKey
-            globeKey
+            if viewModel.showGlobeKey {
+                globeKey
+            }
             micButton
             spaceKey
             returnKey
         }
-        .padding(.top, rowSpacing)
     }
 
     // MARK: - Key Views
 
     private func letterKey(_ letter: String) -> some View {
         let displayLetter = viewModel.isUppercase ? letter : letter.lowercased()
-        return GeometryReader { geo in
+        return Button {
+            viewModel.insertText(letter)
+        } label: {
             Text(displayLetter)
-                .font(.system(size: 22, weight: .regular))
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(keyColor)
-                .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).stroke(keyBorderColor, lineWidth: 1))
-                .cornerRadius(5)
-                .foregroundColor(keyTextColor)
-                .shadow(color: keyShadowColor, radius: 0, x: 0, y: 1)
-                .gesture(
-                    DragGesture(minimumDistance: 0)
-                        .onChanged { value in
-                            guard isTouchInsideKey(value.location, in: geo.size) else {
-                                viewModel.hidePopup()
-                                return
-                            }
-                            viewModel.showPopup(key: displayLetter, frame: geo.frame(in: .global))
-                        }
-                        .onEnded { value in
-                            viewModel.hidePopup()
-                            guard isTouchInsideKey(value.location, in: geo.size) else { return }
-                            viewModel.insertText(letter)
-                        }
-                )
+                .font(.system(size: 22.5, weight: .light))
+                .frame(maxWidth: .infinity)
+                .frame(height: keyHeight)
+                .background(lightKeyBackground)
+                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                .shadow(color: keyShadow, radius: 0, x: 0, y: 1)
         }
-        .frame(height: keyHeight)
+        .buttonStyle(.plain)
+        .foregroundStyle(keyTextColor)
     }
 
     private func characterKey(_ character: String) -> some View {
-        GeometryReader { geo in
+        Button {
+            viewModel.insertCharacter(character)
+        } label: {
             Text(character)
-                .font(.system(size: 20, weight: .regular))
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(keyColor)
-                .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).stroke(keyBorderColor, lineWidth: 1))
-                .cornerRadius(5)
-                .foregroundColor(keyTextColor)
-                .shadow(color: keyShadowColor, radius: 0, x: 0, y: 1)
-                .gesture(
-                    DragGesture(minimumDistance: 0)
-                        .onChanged { value in
-                            guard isTouchInsideKey(value.location, in: geo.size) else {
-                                viewModel.hidePopup()
-                                return
-                            }
-                            viewModel.showPopup(key: character, frame: geo.frame(in: .global))
-                        }
-                        .onEnded { value in
-                            viewModel.hidePopup()
-                            guard isTouchInsideKey(value.location, in: geo.size) else { return }
-                            viewModel.insertCharacter(character)
-                        }
-                )
+                .font(.system(size: 20.5, weight: .regular))
+                .frame(maxWidth: .infinity)
+                .frame(height: keyHeight)
+                .background(lightKeyBackground)
+                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                .shadow(color: keyShadow, radius: 0, x: 0, y: 1)
         }
-        .frame(height: keyHeight)
+        .buttonStyle(.plain)
+        .foregroundStyle(keyTextColor)
     }
 
     private var shiftKey: some View {
@@ -331,49 +266,45 @@ struct KeyboardView: View {
         } label: {
             Image(systemName: viewModel.isCapsLocked ? "capslock.fill" :
                     (viewModel.isShifted ? "shift.fill" : "shift"))
-                .font(.system(size: 18, weight: .medium))
+                .font(.system(size: 16, weight: .medium))
                 .frame(width: 42, height: keyHeight)
-                .background(viewModel.isShifted || viewModel.isCapsLocked ? keyColor : specialKeyColor)
-                .cornerRadius(5)
-                .foregroundColor(keyTextColor)
-                .shadow(color: keyShadowColor, radius: 0, x: 0, y: 1)
+                .background(viewModel.isShifted || viewModel.isCapsLocked ? lightKeyBackground : darkKeyBackground)
+                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                .shadow(color: keyShadow, radius: 0, x: 0, y: 1)
         }
-        .accessibilityLabel(NSLocalizedString(viewModel.isCapsLocked ? "Caps Lock on" : (viewModel.isShifted ? "Shift on" : "Shift"), comment: "Shift key accessibility label"))
-        .accessibilityHint(NSLocalizedString("Tap to toggle shift. Tap again for caps lock.", comment: "Shift key accessibility hint"))
+        .buttonStyle(.plain)
+        .foregroundStyle(keyTextColor)
+        .accessibilityLabel(viewModel.isCapsLocked ? "Caps Lock on" : (viewModel.isShifted ? "Shift on" : "Shift"))
     }
 
     private var backspaceKey: some View {
         Image(systemName: "delete.left")
-            .font(.system(size: 18, weight: .medium))
+            .font(.system(size: 16, weight: .medium))
+            .foregroundStyle(keyTextColor)
             .frame(width: 42, height: keyHeight)
-            .background(specialKeyColor)
-            .cornerRadius(5)
-            .foregroundColor(keyTextColor)
-            .shadow(color: .black.opacity(0.15), radius: 0, x: 0, y: 1)
+            .background(darkKeyBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+            .shadow(color: keyShadow, radius: 0, x: 0, y: 1)
             .onLongPressGesture(
                 minimumDuration: 0.4,
                 maximumDistance: 20,
                 perform: {
-                    // Long-press committed — start continuous delete
                     viewModel.startContinuousDelete()
                     backspaceLongPressed = true
                 },
                 onPressingChanged: { pressing in
                     if pressing {
-                        // Finger just went down — nothing yet
+                        // finger down — wait
                     } else if backspaceLongPressed {
-                        // Was a long press that just ended — clean up
                         viewModel.stopContinuousDelete()
                         backspaceLongPressed = false
                     } else {
-                        // Tap (finger up before long-press threshold) — single delete
                         viewModel.triggerMediumHaptic()
                         viewModel.deleteBackward()
                     }
                 }
             )
-            .accessibilityLabel(NSLocalizedString("Delete", comment: "Backspace key accessibility label"))
-            .accessibilityHint(NSLocalizedString("Double-tap to delete one character. Touch and hold to delete continuously.", comment: "Backspace key accessibility hint"))
+            .accessibilityLabel("Delete")
     }
 
     private var numberToggleKey: some View {
@@ -381,15 +312,15 @@ struct KeyboardView: View {
             viewModel.triggerLightHaptic()
             viewModel.toggleNumbers()
         } label: {
-            Text(NSLocalizedString(viewModel.showNumbers || viewModel.showSymbols ? "ABC" : "123", comment: "Toggle key label"))
+            Text(viewModel.showNumbers || viewModel.showSymbols ? "ABC" : "123")
                 .font(.system(size: 15, weight: .medium))
                 .frame(width: 50, height: keyHeight)
-                .background(specialKeyColor)
-                .cornerRadius(5)
-                .foregroundColor(keyTextColor)
-                .shadow(color: keyShadowColor, radius: 0, x: 0, y: 1)
+                .background(darkKeyBackground)
+                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                .shadow(color: keyShadow, radius: 0, x: 0, y: 1)
         }
-        .accessibilityLabel(viewModel.showNumbers || viewModel.showSymbols ? "Show letters" : "Show numbers")
+        .buttonStyle(.plain)
+        .foregroundStyle(keyTextColor)
     }
 
     private var symbolToggleKey: some View {
@@ -397,15 +328,15 @@ struct KeyboardView: View {
             viewModel.triggerLightHaptic()
             viewModel.toggleSymbols()
         } label: {
-            Text(NSLocalizedString(viewModel.showSymbols ? "123" : "#+=", comment: "Symbol toggle key label"))
+            Text(viewModel.showSymbols ? "123" : "#+=")
                 .font(.system(size: 15, weight: .medium))
                 .frame(width: 42, height: keyHeight)
-                .background(specialKeyColor)
-                .cornerRadius(5)
-                .foregroundColor(keyTextColor)
-                .shadow(color: keyShadowColor, radius: 0, x: 0, y: 1)
+                .background(darkKeyBackground)
+                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                .shadow(color: keyShadow, radius: 0, x: 0, y: 1)
         }
-        .accessibilityLabel(viewModel.showSymbols ? "Show numbers" : "Show symbols")
+        .buttonStyle(.plain)
+        .foregroundStyle(keyTextColor)
     }
 
     private var globeKey: some View {
@@ -416,13 +347,13 @@ struct KeyboardView: View {
             Image(systemName: "globe")
                 .font(.system(size: 16, weight: .medium))
                 .frame(width: 42, height: keyHeight)
-                .background(specialKeyColor)
-                .cornerRadius(5)
-                .foregroundColor(keyTextColor)
-                .shadow(color: keyShadowColor, radius: 0, x: 0, y: 1)
+                .background(darkKeyBackground)
+                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                .shadow(color: keyShadow, radius: 0, x: 0, y: 1)
         }
-        .accessibilityLabel(NSLocalizedString("Switch keyboard", comment: "Globe key accessibility label"))
-        .accessibilityHint(NSLocalizedString("Double-tap to switch to the next keyboard.", comment: "Globe key accessibility hint"))
+        .buttonStyle(.plain)
+        .foregroundStyle(keyTextColor)
+        .accessibilityLabel("Switch keyboard")
     }
 
     private var micButton: some View {
@@ -430,31 +361,32 @@ struct KeyboardView: View {
             viewModel.openMurmurForDictation()
         } label: {
             Image(systemName: viewModel.isModelWarm ? "mic.fill" : "mic.slash.fill")
-                .font(.system(size: 18, weight: .medium))
-                .frame(width: 48, height: keyHeight)
-                .background(viewModel.hasFullAccess ? (viewModel.isModelWarm ? Color.accentColor : Color.orange) : Color.gray)
-                .cornerRadius(5)
-                .foregroundColor(.white)
-                .shadow(color: (viewModel.isModelWarm ? Color.accentColor : Color.orange).opacity(0.3), radius: 2, x: 0, y: 1)
+                .font(.system(size: 16, weight: .medium))
+                .frame(width: 42, height: keyHeight)
+                .background(viewModel.hasFullAccess && viewModel.isModelWarm ? Color.accentColor : darkKeyBackground)
+                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                .shadow(color: keyShadow, radius: 0, x: 0, y: 1)
         }
+        .buttonStyle(.plain)
+        .foregroundStyle(viewModel.hasFullAccess && viewModel.isModelWarm ? .white : keyTextColor)
         .disabled(!viewModel.hasFullAccess)
-        .accessibilityLabel(NSLocalizedString("Dictate", comment: "Mic button accessibility label"))
-        .accessibilityHint(NSLocalizedString(viewModel.hasFullAccess ? "Double-tap to start voice dictation." : "Full Access required for dictation.", comment: "Mic button accessibility hint"))
+        .accessibilityLabel("Dictate")
     }
 
     private var spaceKey: some View {
         Button {
             viewModel.insertSpace()
         } label: {
-            // No label — clean bar like system keyboard
-            Color.clear
+            Text("space")
+                .font(.system(size: 16, weight: .regular))
+                .foregroundStyle(keyTextColor)
                 .frame(maxWidth: .infinity)
                 .frame(height: keyHeight)
-                .background(keyColor)
-                .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).stroke(keyBorderColor, lineWidth: 1))
-                .cornerRadius(5)
-                .shadow(color: keyShadowColor, radius: 0, x: 0, y: 1)
+                .background(lightKeyBackground)
+                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                .shadow(color: keyShadow, radius: 0, x: 0, y: 1)
         }
+        .buttonStyle(.plain)
         .accessibilityLabel("Space")
     }
 
@@ -462,88 +394,66 @@ struct KeyboardView: View {
         Button {
             viewModel.insertReturn()
         } label: {
-            Image(systemName: "return")
-                .font(.system(size: 16, weight: .regular))
-                .frame(width: 44, height: keyHeight)
-                .background(specialKeyColor)
-                .cornerRadius(5)
-                .foregroundColor(keyTextColor)
-                .shadow(color: keyShadowColor, radius: 0, x: 0, y: 1)
+            Text("return")
+                .font(.system(size: 15.5, weight: .medium))
+                .frame(width: 88, height: keyHeight)
+                .background(darkKeyBackground)
+                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                .shadow(color: keyShadow, radius: 0, x: 0, y: 1)
         }
+        .buttonStyle(.plain)
+        .foregroundStyle(keyTextColor)
         .accessibilityLabel("Return")
     }
 
-    // MARK: - Key Popup Overlay
-
-    @ViewBuilder
-    private var keyPopupOverlay: some View {
-        if let key = viewModel.popupKey {
-            GeometryReader { outerGeo in
-                let globalFrame = viewModel.popupFrame
-                let localOrigin = CGPoint(
-                    x: globalFrame.midX - outerGeo.frame(in: .global).minX,
-                    y: globalFrame.minY - outerGeo.frame(in: .global).minY
-                )
-                let popupWidth: CGFloat = 46
-                let popupHeight: CGFloat = 56
-
-                Text(key)
-                    .font(.system(size: 30, weight: .regular))
-                    .foregroundColor(keyTextColor)
-                    .frame(width: popupWidth, height: popupHeight)
-                    .background(popupBackground)
-                    .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(keyBorderColor, lineWidth: 1))
-                    .cornerRadius(8)
-                    .shadow(color: .black.opacity(envColorScheme == .dark ? 0.32 : 0.25), radius: 3, x: 0, y: 2)
-                    .position(
-                        x: localOrigin.x,
-                        y: localOrigin.y - popupHeight / 2 + 4
-                    )
-            }
-            .allowsHitTesting(false)
-        }
-    }
-
-    // MARK: - Colors
+    // MARK: - Colors (match native iOS keyboard)
 
     private var keyboardBackground: Color {
-        envColorScheme == .dark
-            ? Color(red: 0.09, green: 0.09, blue: 0.10)
+        colorScheme == .dark
+            ? Color(red: 0.11, green: 0.11, blue: 0.12)
             : Color(red: 0.82, green: 0.84, blue: 0.86)
     }
 
-    private var keyColor: Color {
-        envColorScheme == .dark
-            ? Color(red: 0.28, green: 0.28, blue: 0.30)
-            : .white
-    }
-
-    private var specialKeyColor: Color {
-        envColorScheme == .dark
-            ? Color(red: 0.18, green: 0.18, blue: 0.20)
-            : Color(red: 0.68, green: 0.71, blue: 0.74)
-    }
-
-    private var keyTextColor: Color {
-        envColorScheme == .dark ? .white : .black
-    }
-
-    private var barBackground: Color {
-        envColorScheme == .dark
-            ? Color(red: 0.18, green: 0.18, blue: 0.20)
-            : Color(white: 0.96)
-    }
-
-    private var popupBackground: Color {
-        envColorScheme == .dark
+    private var lightKeyBackground: Color {
+        colorScheme == .dark
             ? Color(red: 0.26, green: 0.26, blue: 0.28)
             : .white
     }
 
-    private func isTouchInsideKey(_ location: CGPoint, in size: CGSize) -> Bool {
-        CGRect(origin: .zero, size: size).contains(location)
+    private var darkKeyBackground: Color {
+        colorScheme == .dark
+            ? Color(red: 0.16, green: 0.16, blue: 0.18)
+            : Color(red: 0.68, green: 0.71, blue: 0.75)
     }
 
-    private var keyBorderColor: Color { envColorScheme == .dark ? Color.white.opacity(0.10) : Color.black.opacity(0.08) }
-    private var keyShadowColor: Color { envColorScheme == .dark ? Color.black.opacity(0.35) : Color.black.opacity(0.15) }
+    private var keyTextColor: Color {
+        colorScheme == .dark ? .white : .black
+    }
+
+    /// Prediction row background — slightly lighter than the keyboard tray,
+    /// matching Apple's suggestion bar appearance.
+    private var predictionRowBackground: Color {
+        colorScheme == .dark
+            ? Color(red: 0.14, green: 0.14, blue: 0.15)
+            : Color(red: 0.86, green: 0.87, blue: 0.89)
+    }
+
+    /// Murmur button accent color in the prediction row
+    private var murmurButtonColor: Color {
+        if !viewModel.hasFullAccess { return .gray }
+        return viewModel.isModelWarm ? Color.accentColor : .secondary
+    }
+
+    /// Thin dividers between prediction slots and below the prediction row
+    private var separatorColor: Color {
+        colorScheme == .dark
+            ? Color.white.opacity(0.12)
+            : Color.black.opacity(0.12)
+    }
+
+    private var keyShadow: Color {
+        colorScheme == .dark
+            ? Color.black.opacity(0.4)
+            : Color(red: 0.53, green: 0.54, blue: 0.56)
+    }
 }

@@ -13,6 +13,10 @@ final class AudioRecorder: ObservableObject {
     @Published private(set) var permissionDenied = false
     @Published private(set) var lastInterruptionError: String?
 
+    /// Fires when VAD detects silence after speech — the UI layer should
+    /// call `stopRecording()` and begin transcription.
+    @Published private(set) var vadDidAutoStop = false
+
     // MARK: - Private Properties
 
     private var audioEngine: AVAudioEngine?
@@ -22,6 +26,27 @@ final class AudioRecorder: ObservableObject {
 
     /// Target sample rate for WhisperKit (16 kHz)
     private let targetSampleRate: Double = 16000.0
+
+    // MARK: - VAD Configuration
+
+    /// Whether Voice Activity Detection auto-stop is enabled.
+    var vadEnabled = true
+
+    /// RMS threshold above which we consider "speech" present.
+    /// Typical quiet rooms: 0.005–0.01; speech: 0.02–0.15+.
+    private let vadSpeechThreshold: Float = 0.015
+
+    /// How long silence must persist after speech to trigger auto-stop (seconds).
+    private let vadSilenceDuration: TimeInterval = 10.0
+
+    /// Minimum recording duration before VAD can auto-stop (seconds).
+    /// Prevents premature stops during brief pauses at the start.
+    private let vadMinRecordingDuration: TimeInterval = 1.0
+
+    /// VAD state — tracked on the audio tap's queue, results dispatched to MainActor.
+    private nonisolated(unsafe) var vadHasDetectedSpeech = false
+    private nonisolated(unsafe) var vadSilenceStart: Date?
+    private nonisolated(unsafe) var vadRecordingStart: Date?
 
     // MARK: - Initialization
 
@@ -163,6 +188,10 @@ final class AudioRecorder: ObservableObject {
     func startRecording() throws {
         guard !isRecording else { return }
         lastInterruptionError = nil
+        vadDidAutoStop = false
+        vadHasDetectedSpeech = false
+        vadSilenceStart = nil
+        vadRecordingStart = Date()
         cleanupRecording()
 
         guard hasPermission else {
@@ -172,7 +201,7 @@ final class AudioRecorder: ObservableObject {
         // Configure audio session
         let session = AVAudioSession.sharedInstance()
         do {
-            try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
+            try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetoothA2DP])
             try session.setActive(true, options: .notifyOthersOnDeactivation)
         } catch {
             throw RecordingError.engineStartFailed
@@ -222,6 +251,11 @@ final class AudioRecorder: ObservableObject {
         inputNode.removeTap(onBus: 0)
 
         // Install tap on input node
+        let vadEnabledCapture = self.vadEnabled
+        let speechThreshold = self.vadSpeechThreshold
+        let silenceDuration = self.vadSilenceDuration
+        let minRecordingDuration = self.vadMinRecordingDuration
+
         inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
             // Convert to 16kHz mono
             let frameCount = AVAudioFrameCount(
@@ -245,6 +279,16 @@ final class AudioRecorder: ObservableObject {
                 try file.write(from: convertedBuffer)
             } catch {
                 // Silently handle write errors during recording
+            }
+
+            // --- Voice Activity Detection ---
+            if vadEnabledCapture {
+                self?.processVAD(
+                    buffer: convertedBuffer,
+                    speechThreshold: speechThreshold,
+                    silenceDuration: silenceDuration,
+                    minRecordingDuration: minRecordingDuration
+                )
             }
         }
 
@@ -286,6 +330,59 @@ final class AudioRecorder: ObservableObject {
             try? FileManager.default.removeItem(at: url)
             recordingURL = nil
         }
+    }
+
+    // MARK: - Voice Activity Detection
+
+    /// Called on the audio tap thread for each converted buffer.
+    /// Computes RMS energy and decides whether to auto-stop.
+    private nonisolated func processVAD(
+        buffer: AVAudioPCMBuffer,
+        speechThreshold: Float,
+        silenceDuration: TimeInterval,
+        minRecordingDuration: TimeInterval
+    ) {
+        let rms = Self.rmsLevel(of: buffer)
+
+        if rms >= speechThreshold {
+            // Speech detected
+            vadHasDetectedSpeech = true
+            vadSilenceStart = nil
+        } else if vadHasDetectedSpeech {
+            // Silence after speech
+            let now = Date()
+            if vadSilenceStart == nil {
+                vadSilenceStart = now
+            }
+
+            if let silenceStart = vadSilenceStart,
+               let recordingStart = vadRecordingStart,
+               now.timeIntervalSince(silenceStart) >= silenceDuration,
+               now.timeIntervalSince(recordingStart) >= minRecordingDuration {
+                // Auto-stop: reset state and signal main thread
+                vadHasDetectedSpeech = false
+                vadSilenceStart = nil
+                Task { @MainActor [weak self] in
+                    guard let self, self.isRecording else { return }
+                    self.vadDidAutoStop = true
+                }
+            }
+        }
+    }
+
+    /// Computes RMS (root mean square) energy of a float PCM buffer.
+    private nonisolated static func rmsLevel(of buffer: AVAudioPCMBuffer) -> Float {
+        guard let channelData = buffer.floatChannelData, buffer.frameLength > 0 else {
+            return 0
+        }
+        let samples = channelData[0]
+        let count = Int(buffer.frameLength)
+        var sumSquares: Float = 0
+        for i in 0..<count {
+            let sample = samples[i]
+            sumSquares += sample * sample
+        }
+        return sqrtf(sumSquares / Float(count))
     }
 
 }

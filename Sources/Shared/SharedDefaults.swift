@@ -67,6 +67,8 @@ enum SharedDefaults {
         } else {
             suite.removeObject(forKey: pendingTextSessionIDKey)
         }
+        // Signal the keyboard that a transcription result is available
+        DarwinNotificationCenter.post(.transcriptionReady)
     }
 
     /// Reads and clears the pending transcribed text.
@@ -174,6 +176,8 @@ enum SharedDefaults {
         } else {
             suite.removeObject(forKey: dictationFailureReasonKey)
         }
+        // Signal the keyboard that the dictation was abandoned
+        DarwinNotificationCenter.post(.dictationAbandoned)
     }
 
     static func consumeAbandonedDictationSession() -> AbandonedSessionPayload? {
@@ -197,6 +201,8 @@ enum SharedDefaults {
         } else if ready {
             suite.removeObject(forKey: modelLoadingProgressKey)
         }
+        // Signal the keyboard that model state changed
+        DarwinNotificationCenter.post(.modelStateChanged)
     }
 
     static func updateModelLoadingProgress(_ text: String?) {
@@ -234,6 +240,20 @@ enum SharedDefaults {
     /// Returns whether the keyboard extension has been activated at least once.
     static func isKeyboardActive() -> Bool {
         suite.bool(forKey: keyboardActiveKey)
+    }
+
+    // MARK: - Full Access Flag
+
+    private static let fullAccessKey = "keyboardFullAccessGranted"
+
+    /// Called by the keyboard extension to signal whether Full Access is granted.
+    static func setFullAccessGranted(_ granted: Bool) {
+        suite.set(granted, forKey: fullAccessKey)
+    }
+
+    /// Returns whether the keyboard extension has Full Access.
+    static func isFullAccessGranted() -> Bool {
+        suite.bool(forKey: fullAccessKey)
     }
 }
 

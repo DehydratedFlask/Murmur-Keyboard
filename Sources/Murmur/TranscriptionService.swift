@@ -36,7 +36,7 @@ final class TranscriptionService: ObservableObject {
 
     // MARK: - Model Loading
 
-    /// Loads the WhisperKit model. Downloads on first launch, then cached locally.
+    /// Loads the WhisperKit model. Automatically downloads on first launch, then cached locally.
     func loadModel() async {
         let modelName = selectedModel.whisperKitName
 
@@ -52,12 +52,16 @@ final class TranscriptionService: ObservableObject {
         guard modelState != .loading else { return }
 
         modelState = .loading
-        loadingProgress = "Loading \(selectedModel.displayName) model…"
+        loadingProgress = "Preparing \(selectedModel.displayName) model…"
         SharedDefaults.updateModelLoadingProgress(loadingProgress)
 
         do {
+            // Update progress — download happens automatically on first launch
+            loadingProgress = "Downloading \(selectedModel.displayName) model (first launch only)\u{2026}"
+            SharedDefaults.updateModelLoadingProgress(loadingProgress)
+
             // WhisperKit 0.9+ accepts a WhisperKitConfig for initialization.
-            // If the WhisperKitConfig API changes, fall back to the simpler init.
+            // download: true ensures automatic download on first launch.
             let kit = try await WhisperKit(
                 WhisperKitConfig(
                     model: modelName,
@@ -74,7 +78,15 @@ final class TranscriptionService: ObservableObject {
             self.loadingProgress = ""
             SharedDefaults.setModelReady(true, progressText: nil)
         } catch {
-            self.modelState = .error(error.localizedDescription)
+            // Provide user-friendly messages for common failure modes
+            let desc = error.localizedDescription.lowercased()
+            let userMessage: String
+            if desc.contains("network") || desc.contains("internet") || desc.contains("offline") || desc.contains("timed out") {
+                userMessage = "Model download failed. Check your internet connection and try again."
+            } else {
+                userMessage = "Failed to load model: \(error.localizedDescription)"
+            }
+            self.modelState = .error(userMessage)
             self.loadingProgress = ""
             SharedDefaults.setModelReady(false, progressText: nil)
         }

@@ -23,23 +23,25 @@ class KeyboardViewController: UIInputViewController {
         viewModel.textDocumentProxy = textDocumentProxy
         viewModel.inputViewController = self
         viewModel.hasFullAccess = hasFullAccess
+        viewModel.showGlobeKey = needsInputModeSwitchKey
         viewModel.prepareHaptics()
         viewModel.autoCapitalize()
         viewModel.refreshSharedState()
 
         SharedDefaults.setKeyboardActive(true)
-
-        // Load supplementary lexicon for predictive text
-        requestSupplementaryLexicon { [weak self] lexicon in
-            Task { @MainActor in
-                self?.viewModel.supplementaryLexicon = lexicon
-                self?.viewModel.updateSuggestions()
-            }
-        }
+        SharedDefaults.setFullAccessGranted(hasFullAccess)
 
         let keyboardView = KeyboardView(viewModel: viewModel)
         let hosting = UIHostingController(rootView: keyboardView)
         hosting.view.translatesAutoresizingMaskIntoConstraints = false
+
+        // CRITICAL: In keyboard extensions, UIHostingController can collapse
+        // to zero height if it tries to size itself from intrinsic content.
+        // Disable automatic sizing so our explicit height constraint wins.
+        if #available(iOS 16.0, *) {
+            hosting.sizingOptions = []
+        }
+
         hosting.view.backgroundColor = .clear
 
         addChild(hosting)
@@ -54,14 +56,22 @@ class KeyboardViewController: UIInputViewController {
         ])
 
         hostingController = hosting
+
+        // Explicit height so the system allocates space for the keyboard.
+        // 36 (prediction row) + 0.5 (separator) + 8 (top pad) + 4×42 (key rows)
+        // + 3×11 (row spacing) + 3 (bottom pad) ≈ 282
+        let desiredHeight = view.heightAnchor.constraint(equalToConstant: 282)
+        desiredHeight.priority = .init(999)
+        desiredHeight.isActive = true
     }
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         viewModel.textDocumentProxy = textDocumentProxy
         viewModel.hasFullAccess = hasFullAccess
+        SharedDefaults.setFullAccessGranted(hasFullAccess)
+        viewModel.showGlobeKey = needsInputModeSwitchKey
         viewModel.autoCapitalize()
-        viewModel.updateSuggestions()
         viewModel.refreshSharedState()
         checkForPendingText()
     }
@@ -70,16 +80,16 @@ class KeyboardViewController: UIInputViewController {
         super.viewDidAppear(animated)
         viewModel.textDocumentProxy = textDocumentProxy
         viewModel.hasFullAccess = hasFullAccess
+        viewModel.showGlobeKey = needsInputModeSwitchKey
         viewModel.autoCapitalize()
-        viewModel.updateSuggestions()
         viewModel.refreshSharedState()
-        // Start a timer to periodically check for pending text
-        // (handles the case where the app returns after dictation)
+        startDarwinObservers()
         startPendingTextTimer()
     }
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        stopDarwinObservers()
         stopPendingTextTimer()
         viewModel.stopContinuousDelete()
     }
@@ -89,7 +99,6 @@ class KeyboardViewController: UIInputViewController {
         viewModel.textDocumentProxy = textDocumentProxy
         viewModel.hasFullAccess = hasFullAccess
         viewModel.autoCapitalize()
-        viewModel.updateSuggestions()
         viewModel.refreshSharedState()
     }
 
@@ -107,7 +116,6 @@ class KeyboardViewController: UIInputViewController {
             viewModel.activeSessionID = nil
             viewModel.refreshSharedState()
             viewModel.autoCapitalize()
-            viewModel.updateSuggestions()
             return
         }
 
@@ -151,9 +159,38 @@ class KeyboardViewController: UIInputViewController {
         return " " + text
     }
 
+    // MARK: - Darwin Notification Observers
+
+    private func startDarwinObservers() {
+        // Listen for instant cross-process signals from the main app
+        DarwinNotificationCenter.observe(.transcriptionReady) { [weak self] in
+            Task { @MainActor in
+                self?.checkForPendingText()
+            }
+        }
+        DarwinNotificationCenter.observe(.dictationAbandoned) { [weak self] in
+            Task { @MainActor in
+                self?.checkForPendingText()
+            }
+        }
+        DarwinNotificationCenter.observe(.modelStateChanged) { [weak self] in
+            Task { @MainActor in
+                self?.viewModel.refreshSharedState()
+            }
+        }
+    }
+
+    private func stopDarwinObservers() {
+        DarwinNotificationCenter.removeObserver(.transcriptionReady)
+        DarwinNotificationCenter.removeObserver(.dictationAbandoned)
+        DarwinNotificationCenter.removeObserver(.modelStateChanged)
+    }
+
     private func startPendingTextTimer() {
         stopPendingTextTimer()
-        pendingTextTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        // Fallback safety-net poll at a relaxed interval — Darwin notifications
+        // handle the fast path; this catches edge cases where a notification is missed.
+        pendingTextTimer = Timer.scheduledTimer(withTimeInterval: 4.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.checkForPendingText()
             }
@@ -179,6 +216,7 @@ final class KeyboardViewModel: ObservableObject {
     @Published var showNumbers = false
     @Published var showSymbols = false
     @Published var hasFullAccess = false
+    @Published var showGlobeKey = true
     @Published var handoffError: String?
     @Published var isModelWarm = false
     @Published var dictationStatusText = "Loading"
@@ -194,17 +232,8 @@ final class KeyboardViewModel: ObservableObject {
     private var backspaceStartTime: Date?
     private var suppressNextBackspaceTap = false
 
-    // Double-space period
+    // Double-space period shortcut
     private var lastSpaceTime: Date?
-
-    // Key popup
-    @Published var popupKey: String?
-    @Published var popupFrame: CGRect = .zero
-
-    // Predictive text
-    @Published var suggestions: [String] = []
-    private let textChecker = UITextChecker()
-    var supplementaryLexicon: UILexicon?
 
     /// The proxy through which the keyboard inserts/deletes text.
     var textDocumentProxy: UITextDocumentProxy?
@@ -221,11 +250,7 @@ final class KeyboardViewModel: ObservableObject {
 
     func refreshSharedState() {
         isModelWarm = SharedDefaults.isModelReady()
-        if let progress = SharedDefaults.modelLoadingProgress(), !progress.isEmpty, !isModelWarm {
-            dictationStatusText = "Loading"
-        } else {
-            dictationStatusText = isModelWarm ? "Ready" : "Loading"
-        }
+        dictationStatusText = isModelWarm ? "Ready" : "Loading"
     }
 
     func presentHandoffError(_ message: String) {
@@ -259,7 +284,7 @@ final class KeyboardViewModel: ObservableObject {
         mediumHaptic.prepare()
     }
 
-    // MARK: - Actions
+    // MARK: - Text Input
 
     func insertText(_ text: String) {
         triggerLightHaptic()
@@ -271,16 +296,12 @@ final class KeyboardViewModel: ObservableObject {
         if isShifted && !isCapsLocked {
             isShifted = false
         }
-
-        updateSuggestions()
     }
 
-    /// Inserts a number or symbol character, clearing double-space period state.
     func insertCharacter(_ character: String) {
         triggerLightHaptic()
         textDocumentProxy?.insertText(character)
         lastSpaceTime = nil
-        updateSuggestions()
     }
 
     func deleteBackward() {
@@ -291,31 +312,27 @@ final class KeyboardViewModel: ObservableObject {
         triggerMediumHaptic()
         textDocumentProxy?.deleteBackward()
         lastSpaceTime = nil
-        updateSuggestions()
     }
 
     func insertSpace() {
         triggerLightHaptic()
 
-        // Double-space period shortcut
+        // Double-space period shortcut (matches Apple behavior)
         let now = Date()
         let context = textDocumentProxy?.documentContextBeforeInput ?? ""
         if let last = lastSpaceTime,
            now.timeIntervalSince(last) < 0.3,
            canReplaceDoubleSpace(in: context) {
-            // Replace the previously inserted space with ". "
             textDocumentProxy?.deleteBackward()
             textDocumentProxy?.insertText(". ")
             lastSpaceTime = nil
             autoCapitalize()
-            updateSuggestions()
             return
         }
 
         textDocumentProxy?.insertText(" ")
         lastSpaceTime = now
         autoCapitalize()
-        updateSuggestions()
     }
 
     func insertReturn() {
@@ -323,10 +340,9 @@ final class KeyboardViewModel: ObservableObject {
         textDocumentProxy?.insertText("\n")
         lastSpaceTime = nil
         autoCapitalize()
-        updateSuggestions()
     }
 
-    // MARK: - Auto-capitalization
+    // MARK: - Auto-capitalization (matches Apple behavior)
 
     func autoCapitalize() {
         guard !isCapsLocked else { return }
@@ -353,12 +369,10 @@ final class KeyboardViewModel: ObservableObject {
                 guard let self, let start = self.backspaceStartTime else { return }
                 let elapsed = Date().timeIntervalSince(start)
                 if elapsed > 1.5 {
-                    // Word-at-a-time deletion
                     self.deleteWordBackward()
                 } else if elapsed > 0.5 {
                     self.textDocumentProxy?.deleteBackward()
                 }
-                self.updateSuggestions()
             }
         }
     }
@@ -374,7 +388,6 @@ final class KeyboardViewModel: ObservableObject {
             textDocumentProxy?.deleteBackward()
             return
         }
-        // Find last word boundary
         let trimmed = context as NSString
         let range = trimmed.rangeOfCharacter(from: .whitespacesAndNewlines, options: .backwards)
         let count = range.location == NSNotFound ? context.count : (context.count - range.location - range.length)
@@ -392,92 +405,13 @@ final class KeyboardViewModel: ObservableObject {
         return previousCharacter.isLetter || previousCharacter.isNumber
     }
 
-    // MARK: - Key Popup
-
-    func showPopup(key: String, frame: CGRect) {
-        popupKey = key
-        popupFrame = frame
-    }
-
-    func hidePopup() {
-        popupKey = nil
-    }
-
-    // MARK: - Predictive Text
-
-    func updateSuggestions() {
-        guard let proxy = textDocumentProxy, let context = proxy.documentContextBeforeInput else {
-            suggestions = []
-            return
-        }
-        let words = context.components(separatedBy: .whitespacesAndNewlines)
-        guard let currentWord = words.last, !currentWord.isEmpty else {
-            suggestions = []
-            return
-        }
-
-        var results: [String] = []
-
-        // UITextChecker completions
-        let nsWord = currentWord as NSString
-        let completions = textChecker.completions(forPartialWordRange: NSRange(location: 0, length: nsWord.length), in: currentWord, language: "en")
-        if let completions {
-            results.append(contentsOf: completions.prefix(3))
-        }
-
-        // UITextChecker guesses (spell check)
-        let misspelledRange = textChecker.rangeOfMisspelledWord(in: currentWord, range: NSRange(location: 0, length: nsWord.length), startingAt: 0, wrap: false, language: "en")
-        if misspelledRange.location != NSNotFound {
-            let guesses = textChecker.guesses(forWordRange: misspelledRange, in: currentWord, language: "en") ?? []
-            for guess in guesses where !results.contains(guess) {
-                results.append(guess)
-                if results.count >= 3 { break }
-            }
-        }
-
-        // Supplementary lexicon matches
-        if let lexicon = supplementaryLexicon {
-            for entry in lexicon.entries {
-                if entry.userInput.lowercased().hasPrefix(currentWord.lowercased()) && !results.contains(entry.documentText) {
-                    results.append(entry.documentText)
-                    if results.count >= 3 { break }
-                }
-            }
-        }
-
-        // If no suggestions, show the current word in center
-        if results.isEmpty {
-            suggestions = ["", currentWord, ""]
-        } else {
-            // Pad to 3 slots
-            while results.count < 3 { results.append("") }
-            suggestions = Array(results.prefix(3))
-        }
-    }
-
-    func applySuggestion(_ suggestion: String) {
-        guard !suggestion.isEmpty, let proxy = textDocumentProxy, let context = proxy.documentContextBeforeInput else { return }
-        triggerLightHaptic()
-
-        // Delete the current partial word
-        let words = context.components(separatedBy: .whitespacesAndNewlines)
-        if let currentWord = words.last {
-            for _ in 0..<currentWord.count {
-                proxy.deleteBackward()
-            }
-        }
-        proxy.insertText(suggestion + " ")
-        lastSpaceTime = nil
-        suggestions = []
-        autoCapitalize()
-    }
+    // MARK: - Mode Toggles
 
     func toggleShift() {
         if isCapsLocked {
             isCapsLocked = false
             isShifted = false
         } else if isShifted {
-            // Double-tap shift → caps lock
             isCapsLocked = true
         } else {
             isShifted = true
@@ -497,6 +431,8 @@ final class KeyboardViewModel: ObservableObject {
         inputViewController?.advanceToNextInputMode()
     }
 
+    // MARK: - Dictation
+
     func openMurmurForDictation() {
         guard hasFullAccess else { return }
 
@@ -504,6 +440,8 @@ final class KeyboardViewModel: ObservableObject {
         activeSessionID = sessionID
         SharedDefaults.beginDictationSession(sessionID: sessionID)
         SharedDefaults.setDictationRequested(true)
+        // Signal the main app instantly via Darwin notification
+        DarwinNotificationCenter.post(.dictationRequested)
 
         guard let url = URL(string: "murmur://dictate") else { return }
         inputViewController?.extensionContext?.open(url) { [weak self] success in

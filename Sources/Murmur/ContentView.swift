@@ -56,6 +56,7 @@ struct ContentView: View {
     @State private var showSettings = false
     @State private var showCopiedToast = false
     @State private var keyboardIsEnabled = false
+    @State private var fullAccessGranted = false
     @State private var shareItem: ShareableString?
     @State private var isDictationFromKeyboard = false
     @State private var keyboardDictationSessionID: String?
@@ -83,43 +84,69 @@ struct ContentView: View {
     private let successHaptic = UINotificationFeedbackGenerator()
 
     var body: some View {
-        ZStack(alignment: .top) {
-            (colorScheme == .dark ? Color(red: 0.07, green: 0.07, blue: 0.09) : Color(.systemGroupedBackground))
-                .ignoresSafeArea()
+        NavigationStack {
+            ZStack(alignment: .top) {
+                (colorScheme == .dark ? Color(red: 0.07, green: 0.07, blue: 0.09) : Color(.systemGroupedBackground))
+                    .ignoresSafeArea()
 
-            VStack(spacing: 0) {
-                headerBar
-                statusBar
+                VStack(spacing: 0) {
+                    statusBar
+                    transcriptionList
+                }
 
-                transcriptionList
-            }
+                if isDictationFromKeyboard {
+                    keyboardDictationOverlay
+                        .padding(.horizontal, 20)
+                        .padding(.top, 92)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
 
-            if isDictationFromKeyboard {
-                keyboardDictationOverlay
-                    .padding(.horizontal, 20)
-                    .padding(.top, 92)
-                    .transition(.move(edge: .top).combined(with: .opacity))
-            }
+                if showCopiedToast {
+                    copiedToast
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
 
-            if showCopiedToast {
-                copiedToast
-                    .transition(.move(edge: .top).combined(with: .opacity))
-            }
-
-            VStack {
-                Spacer()
-                HStack {
+                VStack {
                     Spacer()
-                    recordFAB
-                        .padding(.trailing, recordFABTrailingPadding)
-                        .padding(.bottom, recordFABBottomPadding)
+                    HStack {
+                        Spacer()
+                        recordFAB
+                            .padding(.trailing, recordFABTrailingPadding)
+                            .padding(.bottom, recordFABBottomPadding)
+                    }
                 }
             }
-        }
-        .sheet(isPresented: $showSettings) {
-            SettingsView(transcriptionService: transcriptionService)
-                .presentationDetents([.medium])
-                .presentationDragIndicator(.visible)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        showSettings = true
+                    } label: {
+                        Image(systemName: "gearshape")
+                            .font(.system(size: 16, weight: .semibold))
+                    }
+                    .buttonStyle(.plain)
+                }
+                ToolbarItem(placement: .principal) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "waveform")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(
+                                LinearGradient(
+                                    colors: [murmurAccent, murmurAccentSecondary],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
+                        Text("Murmur")
+                            .font(.system(.footnote, design: .rounded).weight(.bold))
+                    }
+                }
+            }
+            .toolbarBackground(.hidden, for: .navigationBar)
+            .navigationBarTitleDisplayMode(.inline)
+            .navigationDestination(isPresented: $showSettings) {
+                SettingsView(transcriptionService: transcriptionService)
+            }
         }
         .sheet(item: $shareItem) { item in
             ShareSheet(text: item.text)
@@ -152,12 +179,19 @@ struct ContentView: View {
             toastDismissTask?.cancel()
             errorDismissTask?.cancel()
         }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
+            handleMemoryWarning()
+        }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
             checkKeyboardEnabled()
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
             // Immediate check on activation
             checkKeyboardEnabled()
+            // Restore model-ready flag for the keyboard extension
+            if transcriptionService.modelState == .loaded {
+                SharedDefaults.setModelReady(true, progressText: nil)
+            }
             // Delayed re-check: activeInputModes can lag briefly after returning from Settings
             Task {
                 try? await Task.sleep(for: .milliseconds(600))
@@ -182,6 +216,12 @@ struct ContentView: View {
                 dictationTask = handleDictationRequest()
             }
         }
+        .onChange(of: recorder.vadDidAutoStop) {
+            if recorder.vadDidAutoStop && recorder.isRecording {
+                // VAD detected silence after speech — auto-stop and transcribe
+                stopAndTranscribe()
+            }
+        }
         .onChange(of: recorder.lastInterruptionError) {
             if let error = recorder.lastInterruptionError {
                 if isDictationFromKeyboard {
@@ -199,60 +239,6 @@ struct ContentView: View {
     }
 
     // MARK: - Header Bar
-
-    private var headerBar: some View {
-        HStack(spacing: 16) {
-            Button {
-                showSettings = true
-            } label: {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(.primary)
-                    .frame(width: 44, height: 44)
-                    .background(
-                        Color(.systemBackground).opacity(colorScheme == .dark ? 0.55 : 0.72),
-                        in: RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .stroke(murmurBorder(colorScheme, opacity: 0.10), lineWidth: 1)
-                    )
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Open settings")
-
-            Spacer()
-
-            HStack(spacing: 10) {
-                Image(systemName: "waveform")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(
-                        LinearGradient(
-                            colors: [murmurAccent, murmurAccentSecondary],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                Text("Murmur")
-                    .font(.system(.title3, design: .rounded).weight(.bold))
-                    .foregroundStyle(.primary)
-            }
-
-            Spacer()
-            // Buy Me a Coffee button removed for cleaner header
-            Color.clear.frame(width: 44)
-        }
-        .padding(.horizontal, 20)
-        .padding(.top, 14)
-        .padding(.bottom, 18)
-        .background(Color(.systemBackground).opacity(colorScheme == .dark ? 0.92 : 0.94))
-        .overlay(
-            Rectangle()
-                .fill(murmurBorder(colorScheme, opacity: 0.06))
-                .frame(height: 1),
-            alignment: .bottom
-        )
-    }
 
     // MARK: - Status Bar
 
@@ -374,7 +360,7 @@ struct ContentView: View {
 
             Spacer(minLength: 0)
         }
-        .padding(14)
+        .padding(10)
         .frame(maxWidth: .infinity)
         .background(
             LinearGradient(
@@ -383,11 +369,10 @@ struct ContentView: View {
                 endPoint: .bottomTrailing
             )
         )
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .shadow(color: murmurAccent.opacity(0.12), radius: 10, y: 6)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .padding(.horizontal, 20)
-        .padding(.top, 6)
-        .padding(.bottom, 12)
+        .padding(.top, 2)
+        .padding(.bottom, 4)
     }
 
     private func formatNumber(_ n: Int) -> String {
@@ -398,8 +383,8 @@ struct ContentView: View {
 
     private var transcriptionList: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 18, pinnedViews: []) {
-                if !keyboardIsEnabled {
+            LazyVStack(alignment: .leading, spacing: 10, pinnedViews: []) {
+                if !keyboardIsEnabled || !fullAccessGranted {
                     keyboardSetupBanner
                         .padding(.top, 2)
                 }
@@ -438,13 +423,13 @@ struct ContentView: View {
                     }
                 }
             }
-            .padding(.bottom, 128)
+            .padding(.bottom, 100)
         }
         .scrollIndicators(.hidden)
     }
 
     private var emptyState: some View {
-        VStack(spacing: 18) {
+        VStack(spacing: 14) {
             ZStack {
                 Circle()
                     .fill(
@@ -454,14 +439,14 @@ struct ContentView: View {
                             endPoint: .bottomTrailing
                         )
                     )
-                    .frame(width: 108, height: 108)
+                    .frame(width: 88, height: 88)
 
                 Circle()
                     .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
-                    .frame(width: 108, height: 108)
+                    .frame(width: 88, height: 88)
 
                 Image(systemName: "waveform")
-                    .font(.system(size: 38, weight: .medium))
+                    .font(.system(size: 32, weight: .medium))
                     .foregroundStyle(murmurAccent)
                     .symbolEffect(.pulse.byLayer, options: .repeating, value: store.entries.isEmpty)
             }
@@ -489,7 +474,7 @@ struct ContentView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 24)
-        .padding(.vertical, 44)
+        .padding(.vertical, 12)
     }
 
     private func sectionHeader(_ title: String) -> some View {
@@ -683,8 +668,8 @@ struct ContentView: View {
                     .contentTransition(.symbolEffect(.replace))
             }
         }
-        .disabled(!recorder.hasPermission || transcriptionService.modelState != .loaded || isProcessing)
-        .opacity((!recorder.hasPermission || transcriptionService.modelState != .loaded || isProcessing) ? 0.55 : 1.0)
+        .disabled(!recorder.hasPermission || transcriptionService.modelState == .loading || isProcessing)
+        .opacity((!recorder.hasPermission || transcriptionService.modelState == .loading || transcriptionService.modelState.isError || isProcessing) ? 0.55 : 1.0)
         .onChange(of: recorder.isRecording) {
             if recorder.isRecording {
                 pulseScale = 1.18
@@ -721,55 +706,57 @@ struct ContentView: View {
     // MARK: - Keyboard Setup Banner
 
     private var keyboardSetupBanner: some View {
-        HStack(spacing: 14) {
+        let needsKeyboard = !keyboardIsEnabled
+
+        let icon = needsKeyboard ? "keyboard.badge.ellipsis" : "lock.shield"
+        let title = needsKeyboard ? "Enable Murmur Keyboard" : "Enable Full Access"
+        let subtitle = needsKeyboard
+            ? "Use Murmur for fast dictation in any app."
+            : "Full Access is required for dictation to work properly."
+        let buttonText = needsKeyboard ? "Set Up" : "Settings"
+
+        return HStack(spacing: 14) {
             ZStack {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .fill(murmurAccent.opacity(0.12))
-                    .frame(width: 48, height: 48)
-                Image(systemName: "keyboard.badge.ellipsis")
-                    .font(.system(size: 20, weight: .semibold))
+                    .frame(width: 40, height: 40)
+                Image(systemName: icon)
+                    .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(murmurAccent)
             }
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Enable Murmur Keyboard")
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.primary)
-                Text("Use Murmur for fast dictation in any app.")
+                Text(subtitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
-            Spacer(minLength: 10)
+            Spacer(minLength: 8)
 
             Button {
                 openKeyboardSettings()
             } label: {
-                Text("Set Up")
+                Text(buttonText)
                     .font(.caption.weight(.semibold))
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
                     .background(murmurAccent, in: Capsule())
                     .foregroundStyle(.white)
             }
             .buttonStyle(.plain)
         }
-        .padding(16)
+        .padding(12)
         .background(
-            LinearGradient(
-                colors: colorScheme == .dark
-                    ? [murmurSurfaceElevated(colorScheme), murmurSurface(colorScheme)]
-                    : [Color(.secondarySystemGroupedBackground), Color(.secondarySystemGroupedBackground).opacity(0.94)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            ),
-            in: RoundedRectangle(cornerRadius: 20, style: .continuous)
+            murmurSurfaceElevated(colorScheme),
+            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .stroke(murmurBorder(colorScheme, opacity: 0.12), lineWidth: 1)
         )
-        .shadow(color: murmurAccent.opacity(0.08), radius: 14, y: 8)
         .padding(.horizontal, 20)
     }
 
@@ -795,7 +782,10 @@ struct ContentView: View {
             SharedDefaults.setKeyboardActive(false)
         }
 
-        withAnimation { keyboardIsEnabled = enabled }
+        withAnimation {
+            keyboardIsEnabled = enabled
+            fullAccessGranted = SharedDefaults.isFullAccessGranted()
+        }
     }
 
     private func openKeyboardSettings() {
@@ -835,7 +825,17 @@ struct ContentView: View {
             stopAndTranscribe()
         } else {
             recordHaptic.impactOccurred()
-            startRecording()
+            // If model was unloaded (e.g. by a memory warning), reload it first
+            if transcriptionService.modelState == .unloaded {
+                Task {
+                    await transcriptionService.loadModel()
+                    if transcriptionService.modelState == .loaded {
+                        startRecording()
+                    }
+                }
+            } else {
+                startRecording()
+            }
         }
     }
 
@@ -977,6 +977,22 @@ struct ContentView: View {
         transcriptionTask = task
     }
 
+    // MARK: - Memory Warning
+
+    private func handleMemoryWarning() {
+        // Only unload the model if we are NOT actively recording or transcribing.
+        // This prevents data loss during an in-progress dictation.
+        guard !recorder.isRecording, !isProcessing, !transcriptionService.isTranscribing else {
+            print("[Murmur] Memory warning received but recording/transcribing is active — skipping model unload.")
+            return
+        }
+        print("[Murmur] Memory warning received — unloading WhisperKit model to free memory.")
+        SharedDefaults.setModelReady(false, progressText: nil)
+        Task {
+            await transcriptionService.unloadModel()
+        }
+    }
+
     private func signalKeyboardDictationAbandoned(reason: String) {
         SharedDefaults.abandonDictationSession(reason: reason)
         SharedDefaults.setDictationRequested(false)
@@ -993,59 +1009,131 @@ private struct ShareableString: Identifiable {
     let text: String
 }
 
+// MARK: - Appearance Mode
+
+enum AppearanceMode: String, CaseIterable, Identifiable {
+    case auto = "auto"
+    case light = "light"
+    case dark = "dark"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .auto: return "Auto (System)"
+        case .light: return "Light"
+        case .dark: return "Dark"
+        }
+    }
+
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .auto: return nil
+        case .light: return .light
+        case .dark: return .dark
+        }
+    }
+}
+
 // MARK: - Settings View
 
 struct SettingsView: View {
     @ObservedObject var transcriptionService: TranscriptionService
+    @AppStorage("appearanceMode") private var appearanceMode: String = AppearanceMode.auto.rawValue
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
+
+    private var selectedMode: Binding<AppearanceMode> {
+        Binding(
+            get: { AppearanceMode(rawValue: appearanceMode) ?? .auto },
+            set: { appearanceMode = $0.rawValue }
+        )
+    }
 
     var body: some View {
-        NavigationStack {
-            // presentationDetents and drag indicator are set from the presenting side in ContentView
-            List {
-                Section {
-                    Picker("Model", selection: $transcriptionService.selectedModel) {
-                        ForEach(WhisperModel.allCases) { model in
-                            Text(model.displayName).tag(model)
-                        }
+        List {
+            Section {
+                Picker(selection: selectedMode) {
+                    ForEach(AppearanceMode.allCases) { mode in
+                        Text(mode.displayName).tag(mode)
                     }
-                    .pickerStyle(.inline)
-                } header: {
-                    Text("Whisper Model")
-                } footer: {
-                    Text("Tiny is fastest with slightly lower accuracy. Base is more accurate but uses more memory.")
+                } label: {
+                    EmptyView()
                 }
+                .pickerStyle(.inline)
+            } header: {
+                Text("Appearance")
+            } footer: {
+                Text("Choose how Murmur looks. Auto follows your system setting.")
+            }
 
-                Section {
-                    Button("Reload Model") {
-                        Task {
-                            await transcriptionService.unloadModel()
-                            await transcriptionService.loadModel()
-                            dismiss()
-                        }
+            Section {
+                Picker(selection: $transcriptionService.selectedModel) {
+                    ForEach(WhisperModel.allCases) { model in
+                        Text(model.displayName).tag(model)
                     }
-                    .disabled(transcriptionService.modelState == .loading || transcriptionService.isTranscribing)
+                } label: {
+                    EmptyView()
                 }
+                .pickerStyle(.inline)
+            } header: {
+                Text("Whisper Model")
+            } footer: {
+                Text("Tiny is fastest with slightly lower accuracy. Base is more accurate but uses more memory.")
+            }
 
-                Section {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Murmur v2.1")
-                            .font(.headline)
-                        Text("On-device speech-to-text powered by WhisperKit.\nNo data leaves your device.")
+            Section {
+                Button("Reload Model") {
+                    Task {
+                        await transcriptionService.unloadModel()
+                        await transcriptionService.loadModel()
+                    }
+                }
+                .disabled(transcriptionService.modelState == .loading || transcriptionService.isTranscribing)
+            }
+
+            Section {
+                Button {
+                    if let url = URL(string: "https://buymeacoffee.com/tgn5dq5j8xs") {
+                        openURL(url)
+                    }
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "cup.and.saucer.fill")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(Color.orange)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Buy Me a Coffee")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.primary)
+                            Text("Support Murmur's development")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Image(systemName: "arrow.up.right")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                    .padding(.vertical, 4)
                 }
+                .buttonStyle(.plain)
+            } header: {
+                Text("Support")
             }
-            .navigationTitle("Settings")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { dismiss() }
+
+            Section {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Murmur v2.3")
+                        .font(.headline)
+                    Text("On-device speech-to-text powered by WhisperKit.\nNo data leaves your device.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
+                .padding(.vertical, 4)
             }
         }
+        .navigationTitle("Settings")
+        .navigationBarTitleDisplayMode(.inline)
         .tint(murmurAccent)
     }
 }
