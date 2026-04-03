@@ -124,19 +124,10 @@ struct ContentView: View {
                 }
             }
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button {
-                        showSettings = true
-                    } label: {
-                        Image(systemName: "gearshape")
-                            .font(.system(size: 16, weight: .semibold))
-                    }
-                    .buttonStyle(.plain)
-                }
                 ToolbarItem(placement: .principal) {
                     HStack(spacing: 6) {
                         Image(systemName: "waveform")
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(.system(size: 20, weight: .semibold))
                             .foregroundStyle(
                                 LinearGradient(
                                     colors: [murmurAccent, murmurAccentSecondary],
@@ -145,8 +136,17 @@ struct ContentView: View {
                                 )
                             )
                         Text("Murmur")
-                            .font(.system(.footnote, design: .rounded).weight(.bold))
+                            .font(.system(.body, design: .rounded).weight(.bold))
                     }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showSettings = true
+                    } label: {
+                        Image(systemName: "gearshape")
+                            .font(.system(size: 16, weight: .semibold))
+                    }
+                    .buttonStyle(.plain)
                 }
             }
             .toolbarBackground(.hidden, for: .navigationBar)
@@ -1159,7 +1159,7 @@ struct SettingsView: View {
             } header: {
                 Text("On-Device Model")
             } footer: {
-                Text("Tiny is fastest with slightly lower accuracy. Base is more accurate but uses more memory.")
+                Text("Tiny is fastest with slightly lower accuracy. Base is more accurate but uses more memory. This model is also used as fallback when cloud dictation is unavailable.")
             }
 
             Section {

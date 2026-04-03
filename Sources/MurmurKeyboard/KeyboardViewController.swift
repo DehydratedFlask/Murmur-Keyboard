@@ -444,6 +444,25 @@ final class KeyboardViewModel: ObservableObject {
         DarwinNotificationCenter.post(.dictationRequested)
 
         guard let url = URL(string: "murmur://dictate") else { return }
+
+        // Keyboard extensions can't use extensionContext.open() reliably.
+        // Use the UIResponder chain to reach UIApplication.shared.open().
+        var responder: UIResponder? = inputViewController
+        while let r = responder {
+            if let app = r as? UIApplication {
+                app.open(url, options: [:], completionHandler: nil)
+                return
+            }
+            // Try the selector-based approach for the host app
+            let selector = sel_registerName("openURL:")
+            if r.responds(to: selector) {
+                r.perform(selector, with: url)
+                return
+            }
+            responder = r.next
+        }
+
+        // Fallback: try extensionContext (may fail on newer iOS)
         inputViewController?.extensionContext?.open(url) { [weak self] success in
             Task { @MainActor in
                 guard let self else { return }

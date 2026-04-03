@@ -33,12 +33,14 @@ struct MurmurApp: App {
             .onChange(of: scenePhase) { _, newPhase in
                 switch newPhase {
                 case .active:
-                    // Restore model-ready flag on return to foreground
-                    // The ContentView's .task already loaded the model;
-                    // this just keeps the shared flag in sync for the keyboard.
+                    // ContentView's onBecomeActive handler restores the flag
+                    // if the model is loaded. Nothing extra needed here.
                     break
                 case .background:
-                    SharedDefaults.setModelReady(false, progressText: nil)
+                    // Keep modelReady true — the model stays loaded in memory
+                    // until iOS kills the process or a memory warning triggers unload.
+                    // Clearing it here causes the keyboard to show "Loading" unnecessarily.
+                    break
                 case .inactive:
                     // Don't clear model-ready on inactive — the app transitions
                     // through inactive briefly during normal operations
