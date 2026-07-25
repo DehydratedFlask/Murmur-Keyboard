@@ -23,6 +23,7 @@ final class TranscriptionStore: ObservableObject {
 
     @Published private(set) var entries: [TranscriptionEntry] = []
     @Published var lastError: Error?
+    private(set) var totalWordCount = 0
 
     /// Whether the initial load from disk has completed.
     private(set) var isLoaded = false
@@ -47,6 +48,7 @@ final class TranscriptionStore: ObservableObject {
 
     func save(_ entry: TranscriptionEntry) {
         entries.insert(entry, at: 0)
+        totalWordCount += entry.wordCount
         if isLoaded {
             persist()
         }
@@ -54,23 +56,25 @@ final class TranscriptionStore: ObservableObject {
 
     func delete(_ entry: TranscriptionEntry) {
         entries.removeAll { $0.id == entry.id }
+        totalWordCount = max(0, totalWordCount - entry.wordCount)
         if isLoaded {
             persist()
         }
     }
 
     func delete(at offsets: IndexSet) {
+        let removedWordCount = offsets.reduce(into: 0) { total, index in
+            guard entries.indices.contains(index) else { return }
+            total += entries[index].wordCount
+        }
         entries.remove(atOffsets: offsets)
+        totalWordCount = max(0, totalWordCount - removedWordCount)
         if isLoaded {
             persist()
         }
     }
 
     // MARK: - Derived Stats
-
-    var totalWordCount: Int {
-        entries.reduce(0) { $0 + $1.wordCount }
-    }
 
     /// Average words per dictation session.
     var avgWordsPerDictation: Int {
@@ -93,13 +97,17 @@ final class TranscriptionStore: ObservableObject {
                 guard !Task.isCancelled else { return }
 
                 // Merge: keep any entries created in-memory before load finished
+                let hasNewInMemoryEntries = !entries.isEmpty
                 let inMemoryIDs = Set(entries.map { $0.id })
                 let diskOnly = decoded.filter { !inMemoryIDs.contains($0.id) }
                 let merged = (entries + diskOnly).sorted { $0.timestamp > $1.timestamp }
                 entries = merged
+                totalWordCount = merged.reduce(0) { $0 + $1.wordCount }
                 isLoaded = true
                 lastError = nil
-                persist()
+                if hasNewInMemoryEntries {
+                    persist()
+                }
             } catch is CancellationError {
                 // Task was cancelled — bail out silently
                 ()
@@ -122,9 +130,7 @@ final class TranscriptionStore: ObservableObject {
             do {
                 let tempURL = try await Task.detached {
                     guard !Task.isCancelled else { throw CancellationError() }
-                    let encoder = JSONEncoder()
-                    encoder.outputFormatting = .prettyPrinted
-                    let data = try encoder.encode(entriesToSave)
+                    let data = try JSONEncoder().encode(entriesToSave)
                     guard !Task.isCancelled else { throw CancellationError() }
                     let tempURL = url
                         .deletingLastPathComponent()

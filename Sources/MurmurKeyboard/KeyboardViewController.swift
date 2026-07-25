@@ -9,6 +9,7 @@ class KeyboardViewController: UIInputViewController {
 
     private var hostingController: UIHostingController<KeyboardView>?
     private var pendingTextTimer: Timer?
+    private var heightConstraint: NSLayoutConstraint?
 
     private let dictationTimeout: TimeInterval = 75
 
@@ -26,6 +27,7 @@ class KeyboardViewController: UIInputViewController {
         viewModel.showGlobeKey = needsInputModeSwitchKey
         viewModel.prepareHaptics()
         viewModel.autoCapitalize()
+        viewModel.refreshTextTraits()
         viewModel.refreshSharedState()
 
         SharedDefaults.setKeyboardActive(true)
@@ -63,6 +65,7 @@ class KeyboardViewController: UIInputViewController {
         let desiredHeight = view.heightAnchor.constraint(equalToConstant: 282)
         desiredHeight.priority = .init(999)
         desiredHeight.isActive = true
+        heightConstraint = desiredHeight
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -72,6 +75,8 @@ class KeyboardViewController: UIInputViewController {
         SharedDefaults.setFullAccessGranted(hasFullAccess)
         viewModel.showGlobeKey = needsInputModeSwitchKey
         viewModel.autoCapitalize()
+        viewModel.refreshTextTraits()
+        viewModel.restoreActiveDictationSession()
         viewModel.refreshSharedState()
         checkForPendingText()
     }
@@ -82,6 +87,7 @@ class KeyboardViewController: UIInputViewController {
         viewModel.hasFullAccess = hasFullAccess
         viewModel.showGlobeKey = needsInputModeSwitchKey
         viewModel.autoCapitalize()
+        viewModel.refreshTextTraits()
         viewModel.refreshSharedState()
         startDarwinObservers()
         startPendingTextTimer()
@@ -94,30 +100,26 @@ class KeyboardViewController: UIInputViewController {
         viewModel.stopContinuousDelete()
     }
 
+    override func viewWillTransition(
+        to size: CGSize,
+        with coordinator: any UIViewControllerTransitionCoordinator
+    ) {
+        super.viewWillTransition(to: size, with: coordinator)
+        heightConstraint?.constant = size.width > size.height ? 216 : 282
+    }
+
     override func textDidChange(_ textInput: UITextInput?) {
         super.textDidChange(textInput)
         viewModel.textDocumentProxy = textDocumentProxy
-        viewModel.hasFullAccess = hasFullAccess
+        viewModel.refreshTextTraits()
         viewModel.autoCapitalize()
-        viewModel.refreshSharedState()
     }
 
     // MARK: - Pending Text Handling
 
     private func checkForPendingText() {
+        viewModel.restoreActiveDictationSession()
         viewModel.refreshSharedState()
-
-        if let payload = SharedDefaults.peekPendingTextPayload(),
-           let activeSessionID = viewModel.activeSessionID,
-           payload.sessionID == nil || payload.sessionID == activeSessionID,
-           let consumed = SharedDefaults.consumePendingTextPayload() {
-            textDocumentProxy.insertText(textForInsertion(consumed.text))
-            SharedDefaults.clearDictationSession()
-            viewModel.activeSessionID = nil
-            viewModel.refreshSharedState()
-            viewModel.autoCapitalize()
-            return
-        }
 
         if let abandoned = SharedDefaults.consumeAbandonedDictationSession() {
             if abandoned.sessionID == nil || abandoned.sessionID == viewModel.activeSessionID {
@@ -139,24 +141,6 @@ class KeyboardViewController: UIInputViewController {
             viewModel.presentHandoffError("Murmur took too long to respond. Please try again.")
             viewModel.refreshSharedState()
         }
-    }
-
-    private func textForInsertion(_ text: String) -> String {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return text }
-
-        guard let previousCharacter = textDocumentProxy.documentContextBeforeInput?.last else {
-            return text
-        }
-
-        let previousNeedsSeparation = previousCharacter.isLetter || previousCharacter.isNumber
-        let insertedStartsInline = trimmed.first?.isLetter == true || trimmed.first?.isNumber == true
-
-        guard previousNeedsSeparation && insertedStartsInline else {
-            return text
-        }
-
-        return " " + text
     }
 
     // MARK: - Darwin Notification Observers
@@ -203,6 +187,10 @@ class KeyboardViewController: UIInputViewController {
     }
 }
 
+extension KeyboardViewController: UIInputViewAudioFeedback {
+    var enableInputClicksWhenVisible: Bool { true }
+}
+
 // MARK: - Keyboard ViewModel
 
 /// Observable view model bridging UIKit (textDocumentProxy) to the SwiftUI keyboard view.
@@ -219,7 +207,13 @@ final class KeyboardViewModel: ObservableObject {
     @Published var showGlobeKey = true
     @Published var handoffError: String?
     @Published var isModelWarm = false
-    @Published var dictationStatusText = "Loading"
+    @Published var hasPendingDictation = false
+    @Published var keyboardType: UIKeyboardType = .default
+    @Published var returnKeyType: UIReturnKeyType = .default
+    @Published var autocapitalizationType: UITextAutocapitalizationType = .sentences
+    @Published var enablesReturnKeyAutomatically = false
+    @Published var returnKeyEnabled = true
+    @Published var isDarkMode = false
     var activeSessionID: String?
     private var handoffDismissTask: Task<Void, Never>?
 
@@ -230,10 +224,12 @@ final class KeyboardViewModel: ObservableObject {
     // Continuous backspace
     private var backspaceTimer: Timer?
     private var backspaceStartTime: Date?
+    private var lastWordDeleteTime: Date?
     private var suppressNextBackspaceTap = false
 
     // Double-space period shortcut
     private var lastSpaceTime: Date?
+    private var lastShiftTapTime: Date?
 
     /// The proxy through which the keyboard inserts/deletes text.
     var textDocumentProxy: UITextDocumentProxy?
@@ -249,8 +245,59 @@ final class KeyboardViewModel: ObservableObject {
     }
 
     func refreshSharedState() {
-        isModelWarm = SharedDefaults.isModelReady()
-        dictationStatusText = isModelWarm ? "Ready" : "Loading"
+        let newModelWarm = SharedDefaults.isModelReady()
+        if isModelWarm != newModelWarm {
+            isModelWarm = newModelWarm
+        }
+
+        let payload = SharedDefaults.peekPendingTextPayload()
+        let canPaste = payload.map { payload in
+            guard let activeSessionID else { return false }
+            return payload.sessionID == nil || payload.sessionID == activeSessionID
+        } ?? false
+        if hasPendingDictation != canPaste {
+            hasPendingDictation = canPaste
+        }
+    }
+
+    func restoreActiveDictationSession() {
+        guard activeSessionID == nil else { return }
+        activeSessionID = SharedDefaults.currentDictationSessionID()
+    }
+
+    func refreshTextTraits() {
+        let newKeyboardType = textDocumentProxy?.keyboardType ?? .default
+        let newReturnKeyType = textDocumentProxy?.returnKeyType ?? .default
+        let newAutocapitalizationType =
+            textDocumentProxy?.autocapitalizationType ?? .sentences
+        let newDarkMode = textDocumentProxy?.keyboardAppearance == .dark
+        let newEnablesReturnKeyAutomatically =
+            textDocumentProxy?.enablesReturnKeyAutomatically ?? false
+        let hasText = !(textDocumentProxy?.documentContextBeforeInput ?? "").isEmpty
+        let newReturnKeyEnabled =
+            !newEnablesReturnKeyAutomatically || hasText
+
+        if keyboardType != newKeyboardType { keyboardType = newKeyboardType }
+        if returnKeyType != newReturnKeyType { returnKeyType = newReturnKeyType }
+        if autocapitalizationType != newAutocapitalizationType {
+            autocapitalizationType = newAutocapitalizationType
+        }
+        if isDarkMode != newDarkMode { isDarkMode = newDarkMode }
+        if enablesReturnKeyAutomatically != newEnablesReturnKeyAutomatically {
+            enablesReturnKeyAutomatically = newEnablesReturnKeyAutomatically
+        }
+        if returnKeyEnabled != newReturnKeyEnabled {
+            returnKeyEnabled = newReturnKeyEnabled
+        }
+
+        switch newKeyboardType {
+        case .numberPad, .decimalPad, .phonePad, .namePhonePad,
+             .asciiCapableNumberPad:
+            showNumbers = true
+            showSymbols = false
+        default:
+            break
+        }
     }
 
     func presentHandoffError(_ message: String) {
@@ -273,12 +320,14 @@ final class KeyboardViewModel: ObservableObject {
     // MARK: - Haptics
 
     func triggerLightHaptic() {
+        UIDevice.current.playInputClick()
         guard hasFullAccess else { return }
         lightHaptic.impactOccurred()
         lightHaptic.prepare()
     }
 
     func triggerMediumHaptic() {
+        UIDevice.current.playInputClick()
         guard hasFullAccess else { return }
         mediumHaptic.impactOccurred()
         mediumHaptic.prepare()
@@ -288,12 +337,17 @@ final class KeyboardViewModel: ObservableObject {
 
     func insertText(_ text: String) {
         triggerLightHaptic()
-        let textToInsert = isUppercase ? text.uppercased() : text.lowercased()
+        let textToInsert =
+            (isUppercase || autocapitalizationType == .allCharacters)
+                ? text.uppercased()
+                : text.lowercased()
         textDocumentProxy?.insertText(textToInsert)
         lastSpaceTime = nil
 
         // Auto-unshift after typing a letter (unless caps lock)
-        if isShifted && !isCapsLocked {
+        if isShifted &&
+            !isCapsLocked &&
+            autocapitalizationType != .allCharacters {
             isShifted = false
         }
     }
@@ -302,6 +356,15 @@ final class KeyboardViewModel: ObservableObject {
         triggerLightHaptic()
         textDocumentProxy?.insertText(character)
         lastSpaceTime = nil
+    }
+
+    func insertAlternate(_ character: String) {
+        triggerLightHaptic()
+        textDocumentProxy?.insertText(character)
+        lastSpaceTime = nil
+        if isShifted && !isCapsLocked {
+            isShifted = false
+        }
     }
 
     func deleteBackward() {
@@ -346,12 +409,38 @@ final class KeyboardViewModel: ObservableObject {
 
     func autoCapitalize() {
         guard !isCapsLocked else { return }
+
+        if autocapitalizationType == .none ||
+            keyboardType == .URL ||
+            keyboardType == .emailAddress ||
+            keyboardType == .webSearch {
+            if isShifted { isShifted = false }
+            return
+        }
+        if autocapitalizationType == .allCharacters {
+            if !isShifted { isShifted = true }
+            return
+        }
+
         let context = textDocumentProxy?.documentContextBeforeInput ?? ""
+        if autocapitalizationType == .words {
+            let shouldShift =
+                context.isEmpty ||
+                context.last?.isWhitespace == true ||
+                context.last?.isNewline == true
+            if isShifted != shouldShift { isShifted = shouldShift }
+            return
+        }
+
         let trimmed = context.trimmingCharacters(in: .whitespaces)
-        if trimmed.isEmpty || trimmed.hasSuffix(".") || trimmed.hasSuffix("!") || trimmed.hasSuffix("?") || trimmed.hasSuffix("\n") {
-            isShifted = true
-        } else {
-            isShifted = false
+        let shouldShift =
+            trimmed.isEmpty ||
+            trimmed.hasSuffix(".") ||
+            trimmed.hasSuffix("!") ||
+            trimmed.hasSuffix("?") ||
+            trimmed.hasSuffix("\n")
+        if isShifted != shouldShift {
+            isShifted = shouldShift
         }
     }
 
@@ -363,14 +452,20 @@ final class KeyboardViewModel: ObservableObject {
         triggerMediumHaptic()
         textDocumentProxy?.deleteBackward()
         backspaceStartTime = Date()
+        lastWordDeleteTime = nil
         lastSpaceTime = nil
-        backspaceTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+        backspaceTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self, let start = self.backspaceStartTime else { return }
-                let elapsed = Date().timeIntervalSince(start)
-                if elapsed > 1.5 {
-                    self.deleteWordBackward()
-                } else if elapsed > 0.5 {
+                let now = Date()
+                let elapsed = now.timeIntervalSince(start)
+                if elapsed > 1.6 {
+                    if self.lastWordDeleteTime == nil ||
+                        now.timeIntervalSince(self.lastWordDeleteTime!) >= 0.24 {
+                        self.deleteWordBackward()
+                        self.lastWordDeleteTime = now
+                    }
+                } else if elapsed > 0.12 {
                     self.textDocumentProxy?.deleteBackward()
                 }
             }
@@ -381,6 +476,7 @@ final class KeyboardViewModel: ObservableObject {
         backspaceTimer?.invalidate()
         backspaceTimer = nil
         backspaceStartTime = nil
+        lastWordDeleteTime = nil
     }
 
     private func deleteWordBackward() {
@@ -411,27 +507,88 @@ final class KeyboardViewModel: ObservableObject {
         if isCapsLocked {
             isCapsLocked = false
             isShifted = false
-        } else if isShifted {
-            isCapsLocked = true
+            lastShiftTapTime = nil
         } else {
-            isShifted = true
+            let now = Date()
+            if let previousTap = lastShiftTapTime,
+               now.timeIntervalSince(previousTap) < 0.35 {
+                isCapsLocked = true
+                isShifted = true
+                lastShiftTapTime = nil
+            } else {
+                isShifted.toggle()
+                lastShiftTapTime = now
+            }
         }
     }
 
     func toggleNumbers() {
-        showNumbers.toggle()
-        showSymbols = false
+        withAnimation(.snappy(duration: 0.18)) {
+            showNumbers.toggle()
+            showSymbols = false
+        }
     }
 
     func toggleSymbols() {
-        showSymbols.toggle()
+        withAnimation(.snappy(duration: 0.18)) {
+            showSymbols.toggle()
+        }
     }
 
     func advanceToNextInputMode() {
         inputViewController?.advanceToNextInputMode()
     }
 
+    func handleInputModeList(from sender: UIView, with event: UIEvent) {
+        inputViewController?.handleInputModeList(from: sender, with: event)
+    }
+
+    func moveCursor(byCharacterOffset offset: Int) {
+        guard offset != 0 else { return }
+        textDocumentProxy?.adjustTextPosition(byCharacterOffset: offset)
+    }
+
     // MARK: - Dictation
+
+    func handleMurmurButtonTap() {
+        refreshSharedState()
+        if hasPendingDictation {
+            pastePendingDictation()
+        } else {
+            openMurmurForDictation()
+        }
+    }
+
+    private func pastePendingDictation() {
+        guard let payload = SharedDefaults.peekPendingTextPayload(),
+              let activeSessionID,
+              payload.sessionID == nil || payload.sessionID == activeSessionID,
+              let consumed = SharedDefaults.consumePendingTextPayload()
+        else {
+            refreshSharedState()
+            return
+        }
+
+        triggerMediumHaptic()
+        textDocumentProxy?.insertText(textForInsertion(consumed.text))
+        SharedDefaults.clearDictationSession()
+        self.activeSessionID = nil
+        refreshSharedState()
+        autoCapitalize()
+    }
+
+    private func textForInsertion(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let previousCharacter = textDocumentProxy?.documentContextBeforeInput?.last
+        else {
+            return text
+        }
+
+        let previousNeedsSeparation = previousCharacter.isLetter || previousCharacter.isNumber
+        let insertedStartsInline = trimmed.first?.isLetter == true || trimmed.first?.isNumber == true
+        return previousNeedsSeparation && insertedStartsInline ? " " + text : text
+    }
 
     func openMurmurForDictation() {
         guard hasFullAccess else { return }
@@ -445,8 +602,24 @@ final class KeyboardViewModel: ObservableObject {
 
         guard let url = URL(string: "murmur://dictate") else { return }
 
-        // Keyboard extensions can't use extensionContext.open() reliably.
-        // Use the UIResponder chain to reach UIApplication.shared.open().
+        // Prefer the public extension API. Some older iOS releases reject
+        // opening a containing app from a keyboard, so retain the responder
+        // fallback only when the supported path explicitly reports failure.
+        guard let extensionContext = inputViewController?.extensionContext else {
+            openContainingAppFallback(url)
+            return
+        }
+        extensionContext.open(url) { [weak self] success in
+            Task { @MainActor in
+                guard let self else { return }
+                if !success {
+                    self.openContainingAppFallback(url)
+                }
+            }
+        }
+    }
+
+    private func openContainingAppFallback(_ url: URL) {
         var responder: UIResponder? = inputViewController
         while let r = responder {
             if let app = r as? UIApplication {
@@ -462,18 +635,12 @@ final class KeyboardViewModel: ObservableObject {
             responder = r.next
         }
 
-        // Fallback: try extensionContext (may fail on newer iOS)
-        inputViewController?.extensionContext?.open(url) { [weak self] success in
-            Task { @MainActor in
-                guard let self else { return }
-                if !success {
-                    SharedDefaults.setDictationRequested(false)
-                    SharedDefaults.abandonDictationSession(reason: "Could not open Murmur. Please open the app manually.")
-                    SharedDefaults.clearDictationSession()
-                    self.activeSessionID = nil
-                    self.presentHandoffError("Could not open Murmur. Please open the app manually.")
-                }
-            }
-        }
+        SharedDefaults.setDictationRequested(false)
+        SharedDefaults.abandonDictationSession(
+            reason: "Could not open Murmur. Please open the app manually."
+        )
+        SharedDefaults.clearDictationSession()
+        activeSessionID = nil
+        presentHandoffError("Could not open Murmur. Please open the app manually.")
     }
 }

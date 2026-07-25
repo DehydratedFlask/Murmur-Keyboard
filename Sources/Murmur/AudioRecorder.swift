@@ -1,5 +1,35 @@
 @preconcurrency import AVFoundation
+import Accelerate
 import Foundation
+
+private actor AudioSessionCoordinator {
+    static let shared = AudioSessionCoordinator()
+
+    private var generation = 0
+
+    func activate() throws -> Int {
+        generation &+= 1
+        let activeGeneration = generation
+        let session = AVAudioSession.sharedInstance()
+        try session.setCategory(
+            .playAndRecord,
+            mode: .default,
+            options: [.defaultToSpeaker, .allowBluetoothA2DP]
+        )
+        try session.setActive(true, options: .notifyOthersOnDeactivation)
+        return activeGeneration
+    }
+
+    func deactivate(ifCurrent requestedGeneration: Int?) {
+        guard requestedGeneration == nil || requestedGeneration == generation else {
+            return
+        }
+        try? AVAudioSession.sharedInstance().setActive(
+            false,
+            options: .notifyOthersOnDeactivation
+        )
+    }
+}
 
 /// Handles audio recording using AVAudioEngine, outputting a 16kHz mono WAV file
 /// suitable for WhisperKit transcription.
@@ -9,6 +39,7 @@ final class AudioRecorder: ObservableObject {
     // MARK: - Published State
 
     @Published private(set) var isRecording = false
+    @Published private(set) var isStarting = false
     @Published private(set) var hasPermission = false
     @Published private(set) var permissionDenied = false
     @Published private(set) var lastInterruptionError: String?
@@ -21,6 +52,7 @@ final class AudioRecorder: ObservableObject {
 
     private var audioEngine: AVAudioEngine?
     private var recordingURL: URL?
+    private var audioSessionGeneration: Int?
     private nonisolated(unsafe) var interruptionObserver: (any NSObjectProtocol)?
     private nonisolated(unsafe) var routeChangeObserver: (any NSObjectProtocol)?
 
@@ -101,15 +133,11 @@ final class AudioRecorder: ObservableObject {
             guard isRecording else { return }
             finishInterruptedRecording(with: .sessionInterrupted)
         case .ended:
-            guard let optionsValue else { return }
-            let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
-            if options.contains(.shouldResume) {
-                do {
-                    try AVAudioSession.sharedInstance().setActive(true)
-                } catch {
-                    lastInterruptionError = RecordingError.engineStartFailed.errorDescription
-                }
-            }
+            // The `.began` path intentionally finishes the recording. Starting
+            // a fresh audio engine requires an explicit user action; merely
+            // reactivating the session here leaves an orphan session active and
+            // can recreate iOS 27's main-thread Core Audio hang.
+            _ = optionsValue
         @unknown default:
             break
         }
@@ -184,9 +212,14 @@ final class AudioRecorder: ObservableObject {
 
     // MARK: - Recording
 
-    /// Starts recording audio. Returns immediately; audio is saved to a temp file.
-    func startRecording() throws {
-        guard !isRecording else { return }
+    /// Starts recording audio. Audio-session activation is performed away from
+    /// the main actor because iOS 27 reports synchronous activation on the UI
+    /// thread as a hang risk and may abort the process in Simulator.
+    func startRecording() async throws {
+        guard !isRecording, !isStarting else { return }
+        isStarting = true
+        defer { isStarting = false }
+
         lastInterruptionError = nil
         vadDidAutoStop = false
         vadHasDetectedSpeech = false
@@ -198,68 +231,120 @@ final class AudioRecorder: ObservableObject {
             throw RecordingError.noPermission
         }
 
-        // Configure audio session
-        let session = AVAudioSession.sharedInstance()
         do {
-            try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetoothA2DP])
-            try session.setActive(true, options: .notifyOthersOnDeactivation)
+            audioSessionGeneration = try await Self.activateAudioSession()
         } catch {
             throw RecordingError.engineStartFailed
         }
 
-        // Create engine
         let engine = AVAudioEngine()
-        let inputNode = engine.inputNode
-        let inputFormat = inputNode.outputFormat(forBus: 0)
+        var temporaryURL: URL?
+        var tapInstalled = false
 
-        // Guard against invalid format (e.g. simulator with no mic hardware)
-        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
-            throw RecordingError.formatError
+        do {
+            try Task.checkCancellation()
+
+            let inputNode = engine.inputNode
+            let inputFormat = inputNode.outputFormat(forBus: 0)
+
+            // Guard against invalid format (e.g. simulator with no mic hardware)
+            guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
+                throw RecordingError.formatError
+            }
+
+            // Create recording file at 16kHz mono
+            let outputSettings: [String: Any] = [
+                AVFormatIDKey: Int(kAudioFormatLinearPCM),
+                AVSampleRateKey: targetSampleRate,
+                AVNumberOfChannelsKey: 1,
+                AVLinearPCMBitDepthKey: 16,
+                AVLinearPCMIsFloatKey: false,
+                AVLinearPCMIsBigEndianKey: false
+            ]
+
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString)
+                .appendingPathExtension("wav")
+            temporaryURL = url
+
+            let file = try AVAudioFile(forWriting: url, settings: outputSettings)
+
+            guard let outputFormat = AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: targetSampleRate,
+                channels: 1,
+                interleaved: false
+            ),
+            let converter = AVAudioConverter(from: inputFormat, to: outputFormat) else {
+                throw RecordingError.formatError
+            }
+
+            inputNode.removeTap(onBus: 0)
+            let tapHandler = Self.makeRecordingTap(
+                recorder: self,
+                targetSampleRate: targetSampleRate,
+                inputFormat: inputFormat,
+                outputFormat: outputFormat,
+                converter: converter,
+                file: file,
+                vadEnabled: vadEnabled,
+                speechThreshold: vadSpeechThreshold,
+                silenceDuration: vadSilenceDuration,
+                minRecordingDuration: vadMinRecordingDuration
+            )
+            inputNode.installTap(
+                onBus: 0,
+                bufferSize: 4096,
+                format: inputFormat,
+                block: tapHandler
+            )
+            tapInstalled = true
+
+            try engine.start()
+            self.audioEngine = engine
+            self.recordingURL = url
+            self.isRecording = true
+        } catch {
+            if tapInstalled {
+                engine.inputNode.removeTap(onBus: 0)
+            }
+            engine.stop()
+            await Self.deactivateAudioSession(
+                generation: audioSessionGeneration
+            )
+            audioSessionGeneration = nil
+            if let temporaryURL {
+                try? FileManager.default.removeItem(at: temporaryURL)
+            }
+            if let recordingError = error as? RecordingError {
+                throw recordingError
+            }
+            if error is CancellationError {
+                throw error
+            }
+            throw RecordingError.engineStartFailed
         }
+    }
 
-        // Create recording file at 16kHz mono
-        let outputSettings: [String: Any] = [
-            AVFormatIDKey: Int(kAudioFormatLinearPCM),
-            AVSampleRateKey: targetSampleRate,
-            AVNumberOfChannelsKey: 1,
-            AVLinearPCMBitDepthKey: 16,
-            AVLinearPCMIsFloatKey: false,
-            AVLinearPCMIsBigEndianKey: false
-        ]
-
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString)
-            .appendingPathExtension("wav")
-
-        let file = try AVAudioFile(forWriting: url, settings: outputSettings)
-
-        // Create converter from input format to 16kHz mono
-        guard let outputFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: targetSampleRate,
-            channels: 1,
-            interleaved: false
-        ) else {
-            throw RecordingError.formatError
-        }
-
-        guard let converter = AVAudioConverter(from: inputFormat, to: outputFormat) else {
-            throw RecordingError.formatError
-        }
-
-        // Remove any existing tap before installing a new one
-        inputNode.removeTap(onBus: 0)
-
-        // Install tap on input node
-        let vadEnabledCapture = self.vadEnabled
-        let speechThreshold = self.vadSpeechThreshold
-        let silenceDuration = self.vadSilenceDuration
-        let minRecordingDuration = self.vadMinRecordingDuration
-
-        inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
+    /// Constructs the realtime callback outside MainActor isolation. AVAudioEngine
+    /// invokes this block on its own realtime queue, so inheriting MainActor here
+    /// triggers Swift 6's executor check and crashes under iOS 27.
+    private nonisolated static func makeRecordingTap(
+        recorder: AudioRecorder,
+        targetSampleRate: Double,
+        inputFormat: AVAudioFormat,
+        outputFormat: AVAudioFormat,
+        converter: AVAudioConverter,
+        file: AVAudioFile,
+        vadEnabled: Bool,
+        speechThreshold: Float,
+        silenceDuration: TimeInterval,
+        minRecordingDuration: TimeInterval
+    ) -> AVAudioNodeTapBlock {
+        { [weak recorder] buffer, _ in
             // Convert to 16kHz mono
             let frameCount = AVAudioFrameCount(
-                Double(buffer.frameLength) * (self?.targetSampleRate ?? 16000.0) / inputFormat.sampleRate
+                Double(buffer.frameLength) * targetSampleRate / inputFormat.sampleRate
             )
 
             guard let convertedBuffer = AVAudioPCMBuffer(
@@ -282,8 +367,8 @@ final class AudioRecorder: ObservableObject {
             }
 
             // --- Voice Activity Detection ---
-            if vadEnabledCapture {
-                self?.processVAD(
+            if vadEnabled {
+                recorder?.processVAD(
                     buffer: convertedBuffer,
                     speechThreshold: speechThreshold,
                     silenceDuration: silenceDuration,
@@ -291,19 +376,6 @@ final class AudioRecorder: ObservableObject {
                 )
             }
         }
-
-        do {
-            try engine.start()
-        } catch {
-            inputNode.removeTap(onBus: 0)
-            try? session.setActive(false, options: .notifyOthersOnDeactivation)
-            try? FileManager.default.removeItem(at: url)
-            throw RecordingError.engineStartFailed
-        }
-
-        self.audioEngine = engine
-        self.recordingURL = url
-        self.isRecording = true
     }
 
     /// Stops recording and returns the URL of the recorded WAV file.
@@ -314,8 +386,12 @@ final class AudioRecorder: ObservableObject {
         audioEngine = nil
         isRecording = false
 
-        // Deactivate audio session
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        // Avoid blocking the main actor while Core Audio tears the session down.
+        let sessionGeneration = audioSessionGeneration
+        audioSessionGeneration = nil
+        Task {
+            await Self.deactivateAudioSession(generation: sessionGeneration)
+        }
 
         let url = recordingURL
         // Note: recordingURL is intentionally NOT cleared here.
@@ -330,6 +406,18 @@ final class AudioRecorder: ObservableObject {
             try? FileManager.default.removeItem(at: url)
             recordingURL = nil
         }
+    }
+
+    private nonisolated static func activateAudioSession() async throws -> Int {
+        try await AudioSessionCoordinator.shared.activate()
+    }
+
+    private nonisolated static func deactivateAudioSession(
+        generation: Int?
+    ) async {
+        await AudioSessionCoordinator.shared.deactivate(
+            ifCurrent: generation
+        )
     }
 
     // MARK: - Voice Activity Detection
@@ -377,12 +465,14 @@ final class AudioRecorder: ObservableObject {
         }
         let samples = channelData[0]
         let count = Int(buffer.frameLength)
-        var sumSquares: Float = 0
-        for i in 0..<count {
-            let sample = samples[i]
-            sumSquares += sample * sample
-        }
-        return sqrtf(sumSquares / Float(count))
+        var meanSquare: Float = 0
+        vDSP_measqv(
+            samples,
+            1,
+            &meanSquare,
+            vDSP_Length(count)
+        )
+        return sqrtf(meanSquare)
     }
 
 }

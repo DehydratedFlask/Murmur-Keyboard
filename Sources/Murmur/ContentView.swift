@@ -70,9 +70,6 @@ struct ContentView: View {
     @State private var showCloudFallbackToast = false
     @State private var cloudFallbackDismissTask: Task<Void, Never>?
 
-    // Pulse animation for recording button
-    @State private var pulseScale: CGFloat = 1.0
-
     private var recordFABTrailingPadding: CGFloat {
         UIScreen.main.bounds.width <= 390 ? 28 : 24
     }
@@ -175,13 +172,11 @@ struct ContentView: View {
             checkKeyboardEnabled()
         }
         .onDisappear {
-            // Only signal abandonment if we are actively recording for a keyboard
-            // dictation. Disappearing for benign reasons (Settings sheet, tab
-            // switch, app suspend) must NOT tear down a healthy keyboard session.
-            if isDictationFromKeyboard, recorder.isRecording {
-                signalKeyboardDictationAbandoned(reason: "Dictation was interrupted.")
-                dictationTask?.cancel()
-            }
+            // The keyboard handoff intentionally backgrounds Murmur while it
+            // records. Do not abandon that session here: with the audio
+            // background mode, recording continues while the user returns to
+            // their original app. Actual audio interruptions are reported by
+            // AudioRecorder and handled through `lastInterruptionError`.
             transcriptionTask?.cancel()
             toastDismissTask?.cancel()
             errorDismissTask?.cancel()
@@ -325,7 +320,9 @@ struct ContentView: View {
                 Text(recorder.isRecording ? "Listening for keyboard dictation" : (isProcessing ? "Transcribing keyboard dictation" : "Dictation ready"))
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.primary)
-                Text(keyboardCompletionMessage ?? (isProcessing ? "Murmur is turning your speech into text." : "Stay here while Murmur captures your speech, then switch back to paste the result."))
+                Text(keyboardCompletionMessage ?? (isProcessing
+                    ? "Murmur is turning your speech into text."
+                    : "Swipe back to your app now. Murmur keeps listening, then its keyboard button will paste the result."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -539,6 +536,21 @@ struct ContentView: View {
         )
         .shadow(color: murmurCardShadow.opacity(colorScheme == .dark ? 0.72 : 1), radius: 16, y: 8)
         .padding(.horizontal, 20)
+        .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .onTapGesture {
+            UIPasteboard.general.string = entry.text
+            showCopiedToast = true
+            toastDismissTask?.cancel()
+            toastDismissTask = Task {
+                try? await Task.sleep(for: .seconds(2))
+                if !Task.isCancelled {
+                    showCopiedToast = false
+                }
+            }
+        }
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel("Copy transcription")
+        .accessibilityHint("Copies this transcription to the clipboard")
         .contextMenu {
             Button {
                 UIPasteboard.general.string = entry.text
@@ -629,64 +641,25 @@ struct ContentView: View {
     // MARK: - Floating Record Button
 
     private var recordFAB: some View {
-        Button {
+        let localModelUnavailable =
+            !CloudTranscriptionService.isReady &&
+            (transcriptionService.modelState == .loading ||
+             transcriptionService.modelState.isError)
+        let disabled =
+            !recorder.hasPermission ||
+            (!CloudTranscriptionService.isReady &&
+             transcriptionService.modelState == .loading) ||
+            isProcessing
+
+        return RecordingFAB(
+            isRecording: recorder.isRecording,
+            isDisabled: disabled,
+            isDimmed: !recorder.hasPermission || localModelUnavailable || isProcessing,
+            reduceMotion: reduceMotion
+        ) {
             recordHaptic.prepare()
             handleRecordingTap()
-        } label: {
-            ZStack {
-                if recorder.isRecording {
-                    Circle()
-                        .fill(murmurAccent.opacity(0.18))
-                        .frame(width: 102, height: 102)
-                        .scaleEffect(pulseScale)
-                        .blur(radius: 2)
-                        .animation(
-                            reduceMotion
-                            ? .linear(duration: 0.01)
-                            : .easeInOut(duration: 1.05).repeatForever(autoreverses: true),
-                            value: pulseScale
-                        )
-
-                    Circle()
-                        .stroke(murmurAccent.opacity(0.28), lineWidth: 1.5)
-                        .frame(width: 92, height: 92)
-                        .scaleEffect(pulseScale * 0.98)
-                        .opacity(reduceMotion ? 1 : 0.85)
-                }
-
-                Circle()
-                    .fill(
-                        LinearGradient(
-                            colors: recorder.isRecording
-                                ? [Color.red, Color.red.opacity(0.84)]
-                                : [murmurAccentSecondary, murmurAccent],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .frame(width: 68, height: 68)
-                    .shadow(
-                        color: (recorder.isRecording ? Color.red : murmurAccent).opacity(0.38),
-                        radius: recorder.isRecording ? 24 : 18,
-                        y: 10
-                    )
-
-                Image(systemName: recorder.isRecording ? "stop.fill" : "mic.fill")
-                    .font(.system(size: 25, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .contentTransition(.symbolEffect(.replace))
-            }
         }
-        .disabled(!recorder.hasPermission || (!CloudTranscriptionService.isReady && transcriptionService.modelState == .loading) || isProcessing)
-        .opacity((!recorder.hasPermission || (!CloudTranscriptionService.isReady && (transcriptionService.modelState == .loading || transcriptionService.modelState.isError)) || isProcessing) ? 0.55 : 1.0)
-        .onChange(of: recorder.isRecording) {
-            if recorder.isRecording {
-                pulseScale = 1.18
-            } else {
-                pulseScale = 1.0
-            }
-        }
-        .accessibilityLabel(NSLocalizedString(recorder.isRecording ? "Stop recording" : "Start recording", comment: "Record button accessibility label"))
     }
 
     // MARK: - Copied Toast
@@ -795,27 +768,12 @@ struct ContentView: View {
     // MARK: - Helpers
 
     private func checkKeyboardEnabled() {
-        // Require both: the shared-defaults signal AND the extension appearing
-        // in the system's active input modes (using the safe public API).
-        let flagActive = SharedDefaults.isKeyboardActive()
-        let bundleID = Bundle.main.bundleIdentifier ?? ""
-        let extensionPrefix = bundleID + "."
-        let systemActive = UITextInputMode.activeInputModes.contains { mode in
-            // primaryLanguage for third-party keyboards includes the extension bundle ID prefix
-            guard let lang = mode.primaryLanguage else { return false }
-            return lang.hasPrefix(extensionPrefix) || lang.contains("MurmurKeyboard")
-        }
-
-        let enabled = flagActive && systemActive
-
-        // If the flag is set but the extension is no longer in activeInputModes,
-        // the user has likely disabled the keyboard — reset the flag.
-        if flagActive && !systemActive {
-            SharedDefaults.setKeyboardActive(false)
-        }
-
+        // iOS 27 exposes third-party modes only by primary language (for Murmur,
+        // simply "en-US"), so activeInputModes cannot reliably identify the
+        // extension. Use the extension's App Group handshake, which is set only
+        // after iOS has actually loaded Murmur as a keyboard.
         withAnimation {
-            keyboardIsEnabled = enabled
+            keyboardIsEnabled = SharedDefaults.isKeyboardActive()
             fullAccessGranted = SharedDefaults.isFullAccessGranted()
         }
     }
@@ -852,6 +810,7 @@ struct ContentView: View {
     // MARK: - Recording Actions
 
     private func handleRecordingTap() {
+        guard !recorder.isStarting else { return }
         if recorder.isRecording {
             recordHaptic.impactOccurred()
             stopAndTranscribe()
@@ -863,7 +822,7 @@ struct ContentView: View {
                 Task {
                     await transcriptionService.loadModel()
                     if transcriptionService.modelState == .loaded {
-                        startRecording()
+                        await startRecording()
                     }
                 }
             } else {
@@ -871,7 +830,7 @@ struct ContentView: View {
                 if transcriptionService.modelState == .unloaded {
                     Task { await transcriptionService.loadModel() }
                 }
-                startRecording()
+                Task { await startRecording() }
             }
         }
     }
@@ -903,14 +862,14 @@ struct ContentView: View {
                 return
             }
             keyboardCompletionMessage = nil
-            startRecording()
+            await startRecording()
         }
     }
 
-    private func startRecording() {
+    private func startRecording() async {
         clearErrorMessage()
         do {
-            try recorder.startRecording()
+            try await recorder.startRecording()
         } catch {
             if case RecordingError.noPermission = error {
                 showMicPermissionAlert = recorder.permissionDenied
@@ -1063,6 +1022,82 @@ struct ContentView: View {
         keyboardCompletionMessage = nil
         isDictationFromKeyboard = false
         keyboardDictationSessionID = nil
+    }
+}
+
+/// Owns the repeating pulse state so animation frames do not invalidate the
+/// entire transcription list and all of its derived sections.
+private struct RecordingFAB: View {
+    let isRecording: Bool
+    let isDisabled: Bool
+    let isDimmed: Bool
+    let reduceMotion: Bool
+    let action: () -> Void
+
+    @State private var pulseScale: CGFloat = 1
+
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                if isRecording {
+                    Circle()
+                        .fill(murmurAccent.opacity(0.18))
+                        .frame(width: 102, height: 102)
+                        .scaleEffect(pulseScale)
+                        .blur(radius: 2)
+                        .animation(
+                            reduceMotion
+                                ? .linear(duration: 0.01)
+                                : .easeInOut(duration: 1.05)
+                                    .repeatForever(autoreverses: true),
+                            value: pulseScale
+                        )
+
+                    Circle()
+                        .stroke(murmurAccent.opacity(0.28), lineWidth: 1.5)
+                        .frame(width: 92, height: 92)
+                        .scaleEffect(pulseScale * 0.98)
+                        .opacity(reduceMotion ? 1 : 0.85)
+                }
+
+                Circle()
+                    .fill(
+                        LinearGradient(
+                            colors: isRecording
+                                ? [Color.red, Color.red.opacity(0.84)]
+                                : [murmurAccentSecondary, murmurAccent],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(width: 68, height: 68)
+                    .shadow(
+                        color: (isRecording ? Color.red : murmurAccent)
+                            .opacity(0.38),
+                        radius: isRecording ? 24 : 18,
+                        y: 10
+                    )
+
+                Image(systemName: isRecording ? "stop.fill" : "mic.fill")
+                    .font(.system(size: 25, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .contentTransition(.symbolEffect(.replace))
+            }
+        }
+        .disabled(isDisabled)
+        .opacity(isDimmed ? 0.55 : 1)
+        .onAppear {
+            pulseScale = isRecording && !reduceMotion ? 1.18 : 1
+        }
+        .onChange(of: isRecording) {
+            pulseScale = isRecording && !reduceMotion ? 1.18 : 1
+        }
+        .accessibilityLabel(
+            NSLocalizedString(
+                isRecording ? "Stop recording" : "Start recording",
+                comment: "Record button accessibility label"
+            )
+        )
     }
 }
 

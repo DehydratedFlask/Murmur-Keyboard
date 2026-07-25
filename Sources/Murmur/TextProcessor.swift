@@ -21,6 +21,20 @@ struct TextProcessor {
         "yeah so",
     ]
 
+    /// Regex compilation is relatively expensive compared with processing a
+    /// short transcription. Cache the default expression once for the common
+    /// path instead of rebuilding one expression per filler on every result.
+    private static let defaultFillerRegex: NSRegularExpression? = {
+        let alternatives = defaultFillerWords
+            .sorted { $0.count > $1.count }
+            .map(NSRegularExpression.escapedPattern)
+            .joined(separator: "|")
+        return try? NSRegularExpression(
+            pattern: "\\b(?:\(alternatives))\\b",
+            options: .caseInsensitive
+        )
+    }()
+
     // MARK: - Processing
 
     /// Processes raw transcription text: removes filler words and cleans formatting.
@@ -33,20 +47,26 @@ struct TextProcessor {
             return ""
         }
 
-        let fillers = fillerWords ?? defaultFillerWords
         var result = text
 
-        // Remove filler words (case-insensitive, whole-word matching)
-        // Sort longest first so "okay so" is matched before "so"
-        for filler in fillers.sorted(by: { $0.count > $1.count }) {
-            let pattern = "\\b\(NSRegularExpression.escapedPattern(for: filler))\\b"
-            if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) {
-                result = regex.stringByReplacingMatches(
-                    in: result,
-                    range: NSRange(result.startIndex..., in: result),
-                    withTemplate: ""
-                )
+        if let fillerWords {
+            // Custom lists are uncommon and remain dynamic.
+            for filler in fillerWords.sorted(by: { $0.count > $1.count }) {
+                let pattern = "\\b\(NSRegularExpression.escapedPattern(for: filler))\\b"
+                if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) {
+                    result = regex.stringByReplacingMatches(
+                        in: result,
+                        range: NSRange(result.startIndex..., in: result),
+                        withTemplate: ""
+                    )
+                }
             }
+        } else if let regex = defaultFillerRegex {
+            result = regex.stringByReplacingMatches(
+                in: result,
+                range: NSRange(result.startIndex..., in: result),
+                withTemplate: ""
+            )
         }
 
         // Clean up punctuation left dangling after filler removal

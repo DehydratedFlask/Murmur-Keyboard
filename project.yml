@@ -3,7 +3,7 @@ options:
   bundleIdPrefix: com.murmur
   deploymentTarget:
     iOS: "17.0"
-  xcodeVersion: "26.4"
+  xcodeVersion: "27.0"
 
 settings:
   base:
@@ -38,13 +38,15 @@ targets:
       properties:
         CFBundleDisplayName: Murmur
         CFBundleIconName: AppIcon
-        CFBundleShortVersionString: "2.1"
-        CFBundleVersion: "1"
+        CFBundleShortVersionString: "2.4"
+        CFBundleVersion: "8"
         CFBundleURLTypes:
           - CFBundleURLName: com.murmurkeyboard.app
             CFBundleURLSchemes:
               - murmur
         NSMicrophoneUsageDescription: "Murmur needs microphone access to transcribe your speech on-device."
+        UIBackgroundModes:
+          - audio
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
@@ -71,11 +73,11 @@ targets:
       path: Sources/MurmurKeyboard/Info.plist
       properties:
         CFBundleDisplayName: Murmur
-        CFBundleShortVersionString: "2.1"
-        CFBundleVersion: "1"
+        CFBundleShortVersionString: "2.4"
+        CFBundleVersion: "8"
         NSExtension:
           NSExtensionAttributes:
-            IsASCIICapable: false
+            IsASCIICapable: true
             PrefersRightToLeft: false
             PrimaryLanguage: en-US
             RequestsOpenAccess: true
