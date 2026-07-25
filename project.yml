@@ -38,8 +38,8 @@ targets:
       properties:
         CFBundleDisplayName: Murmur
         CFBundleIconName: AppIcon
-        CFBundleShortVersionString: "2.4"
-        CFBundleVersion: "8"
+        CFBundleShortVersionString: "3.0"
+        CFBundleVersion: "9"
         CFBundleURLTypes:
           - CFBundleURLName: com.murmurkeyboard.app
             CFBundleURLSchemes:
@@ -73,8 +73,8 @@ targets:
       path: Sources/MurmurKeyboard/Info.plist
       properties:
         CFBundleDisplayName: Murmur
-        CFBundleShortVersionString: "2.4"
-        CFBundleVersion: "8"
+        CFBundleShortVersionString: "3.0"
+        CFBundleVersion: "9"
         NSExtension:
           NSExtensionAttributes:
             IsASCIICapable: true

@@ -421,6 +421,7 @@ enum CloudTranscriptionService {
 
         let model = selectedModel(for: provider)
         let audioData = try Data(contentsOf: audioURL)
+        let dictionaryTerms = PersonalDictionary.terms
 
         switch provider {
         case .groq, .openai:
@@ -428,11 +429,15 @@ enum CloudTranscriptionService {
                 endpoint: provider.transcriptionEndpoint,
                 apiKey: key,
                 model: model,
-                audioData: audioData
+                audioData: audioData,
+                vocabulary: dictionaryTerms
             )
         case .deepgram:
             return try await transcribeDeepgram(
-                endpoint: deepgramEndpoint(model: model),
+                endpoint: deepgramEndpoint(
+                    model: model,
+                    vocabulary: dictionaryTerms
+                ),
                 apiKey: key,
                 audioData: audioData
             )
@@ -440,12 +445,23 @@ enum CloudTranscriptionService {
     }
 
     /// Builds the Deepgram transcription URL with the selected model.
-    private static func deepgramEndpoint(model: String) -> URL {
+    private static func deepgramEndpoint(
+        model: String,
+        vocabulary: [String] = []
+    ) -> URL {
         var components = URLComponents(url: CloudProvider.deepgram.transcriptionEndpoint, resolvingAgainstBaseURL: false)!
         components.queryItems = [
             URLQueryItem(name: "model", value: model),
             URLQueryItem(name: "smart_format", value: "true"),
         ]
+        let vocabularyParameter = model.lowercased().contains("nova-3")
+            ? "keyterm"
+            : "keywords"
+        components.queryItems?.append(
+            contentsOf: vocabulary.prefix(100).map {
+                URLQueryItem(name: vocabularyParameter, value: $0)
+            }
+        )
         return components.url!
     }
 
@@ -509,7 +525,8 @@ enum CloudTranscriptionService {
         endpoint: URL,
         apiKey: String,
         model: String,
-        audioData: Data
+        audioData: Data,
+        vocabulary: [String] = []
     ) async throws -> String {
         let boundary = "Boundary-\(UUID().uuidString)"
 
@@ -532,6 +549,20 @@ enum CloudTranscriptionService {
 
         // Language hint
         body.appendMultipartField(name: "language", value: "en", boundary: boundary)
+
+        if !vocabulary.isEmpty {
+            let prompt = String(
+                "Preferred spellings: \(vocabulary.joined(separator: ", "))."
+                    .prefix(1_000)
+            )
+            if !prompt.isEmpty {
+                body.appendMultipartField(
+                    name: "prompt",
+                    value: prompt,
+                    boundary: boundary
+                )
+            }
+        }
 
         // Close boundary
         body.append("--\(boundary)--\r\n".data(using: .utf8)!)

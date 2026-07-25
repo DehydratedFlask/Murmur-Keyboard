@@ -123,13 +123,31 @@ final class TranscriptionService: ObservableObject {
 
         let wrapper = UnsafeSendableBox(whisperKit)
         let path = audioURL.path
-        let fullText = try await Self.runTranscription(kit: wrapper, audioPath: path)
+        let dictionary = PersonalDictionary.enabledEntries
+        let fullText = try await Self.runTranscription(
+            kit: wrapper,
+            audioPath: path,
+            dictionary: dictionary
+        )
         return fullText
     }
 
     /// Runs the actual WhisperKit transcription off the main actor to satisfy Swift 6 sendability.
-    private nonisolated static func runTranscription(kit: UnsafeSendableBox<WhisperKit>, audioPath: String) async throws -> String {
+    private nonisolated static func runTranscription(
+        kit: UnsafeSendableBox<WhisperKit>,
+        audioPath: String,
+        dictionary: [PersonalDictionaryEntry]
+    ) async throws -> String {
         let whisperKit = kit.value
+        let promptTokens: [Int]?
+        if let prompt = PersonalDictionary.recognitionPrompt(entries: dictionary),
+           let tokenizer = whisperKit.tokenizer {
+            // Whisper reserves half of its text context for the previous-text
+            // prompt. Keep the most recent 200 tokens within that budget.
+            promptTokens = Array(tokenizer.encode(text: prompt).suffix(200))
+        } else {
+            promptTokens = nil
+        }
         let options = DecodingOptions(
             verbose: false,
             task: .transcribe,
@@ -139,10 +157,12 @@ final class TranscriptionService: ObservableObject {
             usePrefillCache: true,
             skipSpecialTokens: true,
             withoutTimestamps: true,
+            promptTokens: promptTokens,
             suppressBlank: true,
             compressionRatioThreshold: 2.4,
             logProbThreshold: -1.0,
-            noSpeechThreshold: 0.6
+            noSpeechThreshold: 0.6,
+            chunkingStrategy: .vad
         )
 
         let results: [TranscriptionResult] = try await whisperKit.transcribe(

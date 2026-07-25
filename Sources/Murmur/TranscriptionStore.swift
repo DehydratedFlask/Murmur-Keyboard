@@ -29,6 +29,7 @@ final class TranscriptionStore: ObservableObject {
     private(set) var isLoaded = false
 
     private let fileURL: URL
+    private let preCleanupBackupURL: URL
     private var saveTask: Task<Void, Never>?
     private var saveGeneration: UInt = 0
     private var loadTask: Task<Void, Never>?
@@ -36,6 +37,7 @@ final class TranscriptionStore: ObservableObject {
     init() {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         fileURL = docs.appendingPathComponent("transcriptions.json")
+        preCleanupBackupURL = docs.appendingPathComponent("transcriptions-pre-cleanup.json")
         load()
     }
 
@@ -86,12 +88,33 @@ final class TranscriptionStore: ObservableObject {
 
     private func load() {
         let url = fileURL
+        let backupURL = preCleanupBackupURL
         let task = Task {
             do {
-                let decoded = try await Task.detached {
-                    guard FileManager.default.fileExists(atPath: url.path) else { return [TranscriptionEntry]() }
+                let loadResult = try await Task.detached {
+                    guard FileManager.default.fileExists(atPath: url.path) else {
+                        return (entries: [TranscriptionEntry](), migrated: false)
+                    }
                     let data = try Data(contentsOf: url)
-                    return try JSONDecoder().decode([TranscriptionEntry].self, from: data)
+                    let decoded = try JSONDecoder().decode([TranscriptionEntry].self, from: data)
+                    let cleaned = decoded.compactMap { entry -> TranscriptionEntry? in
+                        let cleanedText = TextProcessor.process(entry.text)
+                        guard !cleanedText.isEmpty else { return nil }
+                        guard cleanedText != entry.text else { return entry }
+                        return TranscriptionEntry(
+                            id: entry.id,
+                            text: cleanedText,
+                            timestamp: entry.timestamp
+                        )
+                    }
+                    let migrated = cleaned.count != decoded.count
+                        || zip(cleaned, decoded).contains { $0.text != $1.text || $0.id != $1.id }
+
+                    // Preserve the original history once before upgrading it.
+                    if migrated, !FileManager.default.fileExists(atPath: backupURL.path) {
+                        try FileManager.default.copyItem(at: url, to: backupURL)
+                    }
+                    return (entries: cleaned, migrated: migrated)
                 }.value
 
                 guard !Task.isCancelled else { return }
@@ -99,13 +122,13 @@ final class TranscriptionStore: ObservableObject {
                 // Merge: keep any entries created in-memory before load finished
                 let hasNewInMemoryEntries = !entries.isEmpty
                 let inMemoryIDs = Set(entries.map { $0.id })
-                let diskOnly = decoded.filter { !inMemoryIDs.contains($0.id) }
+                let diskOnly = loadResult.entries.filter { !inMemoryIDs.contains($0.id) }
                 let merged = (entries + diskOnly).sorted { $0.timestamp > $1.timestamp }
                 entries = merged
                 totalWordCount = merged.reduce(0) { $0 + $1.wordCount }
                 isLoaded = true
                 lastError = nil
-                if hasNewInMemoryEntries {
+                if hasNewInMemoryEntries || loadResult.migrated {
                     persist()
                 }
             } catch is CancellationError {

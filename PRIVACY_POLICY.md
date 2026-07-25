@@ -1,24 +1,49 @@
 # Murmur - Privacy Policy
 
-**Last updated:** March 29, 2026
+**Last updated:** July 24, 2026
 
 ## Overview
 
-Murmur is a voice-to-text iPhone app with a custom keyboard extension. Murmur transcribes speech on-device using Apple's Core ML and the WhisperKit framework. We designed Murmur so your audio and text stay on your device.
+Murmur is a voice-to-text iPhone app with a custom keyboard extension. By
+default, Murmur transcribes speech on-device using Apple's Core ML and the
+WhisperKit framework. An optional cloud dictation mode is available only when
+you enable it and configure a supported provider.
 
 ## Data Collection
 
-**Murmur does not collect, store, sell, transmit, or share personal data.** Specifically:
+**Murmur does not operate a content server, sell personal data, or use audio or
+transcriptions for advertising or tracking.** Specifically:
 
 - **No accounts.** Murmur does not require sign-up, login, or account creation.
 - **No analytics or tracking.** Murmur does not use analytics SDKs, advertising SDKs, trackers, or third-party crash reporting services.
-- **No server-side transcription.** Your speech is processed locally on your device using an on-device Whisper model.
-- **No cloud storage.** Your audio recordings and transcriptions are not uploaded to Murmur servers because Murmur has no servers for your content.
-- **No third-party sharing.** Murmur does not sell, rent, or disclose your audio or transcribed text to third parties.
+- **On-device by default.** Unless you enable cloud dictation, your speech is
+  processed locally using an on-device Whisper model.
+- **No Murmur cloud storage.** Murmur has no server or remote database for your
+  audio, transcriptions, history, or personal dictionary.
+- **Optional providers.** When cloud dictation is enabled, Murmur sends the
+  current audio and enabled personal-dictionary spellings directly to the
+  provider you selected. That provider processes the request under its own
+  terms and privacy policy.
 
 ## Microphone Access
 
-Murmur requests microphone permission so you can record speech for transcription inside the app. Audio is used only while you are actively dictating. Audio is processed locally for transcription and is discarded after processing.
+Murmur requests microphone permission so you can record speech for
+transcription inside the app. Audio is used only while you are actively
+dictating and is discarded by Murmur after processing. It remains on-device
+unless you have enabled cloud dictation.
+
+## Optional Cloud Dictation
+
+Cloud dictation is off by default and requires an API key plus acceptance of an
+in-app disclosure for the selected provider. When enabled:
+
+- The recorded audio is transmitted over HTTPS to the selected provider.
+- Enabled personal-dictionary spellings may be included as recognition hints.
+- Murmur stores the API key in the iOS Keychain.
+- If the provider is unavailable, Murmur may fall back to on-device
+  transcription.
+
+You can disable cloud dictation at any time in Settings.
 
 ## Keyboard Extension and Full Access
 
@@ -37,7 +62,11 @@ On first launch, Murmur may download the selected Whisper model over **HTTPS** s
 
 ## Data Storage
 
-Murmur keeps recent transcription history on-device so you can view your past dictations in the app. This history stays on your device unless you choose to copy or share text yourself. Murmur does not maintain a remote database of your content.
+Murmur keeps recent transcription history and your personal dictionary
+on-device so you can view past dictations and manage preferred spellings. This
+data stays on your device unless you copy or share text yourself, or enable
+cloud dictation as described above. Murmur does not maintain a remote database
+of your content.
 
 ## Children's Privacy
 

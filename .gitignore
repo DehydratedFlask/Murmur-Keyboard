@@ -9,8 +9,5 @@ xcuserdata/
 .build/
 Packages/
 
-# Generated
-generate_icon.swift
-
 # OS
 .DS_Store

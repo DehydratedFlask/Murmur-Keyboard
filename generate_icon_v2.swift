@@ -55,7 +55,11 @@ func generateIcon(size: Int, outputPath: String) {
     }
 }
 
-let iconDir = "/Users/jarvis/Desktop/Murmur/Sources/Murmur/Assets.xcassets/AppIcon.appiconset"
+let repositoryRoot = URL(fileURLWithPath: #filePath)
+    .deletingLastPathComponent()
+let iconDir = repositoryRoot
+    .appendingPathComponent("Sources/Murmur/Assets.xcassets/AppIcon.appiconset")
+    .path
 
 // Generate all required sizes
 generateIcon(size: 1024, outputPath: "\(iconDir)/icon-1024.png")
@@ -63,4 +67,3 @@ generateIcon(size: 180, outputPath: "\(iconDir)/icon-180.png")
 generateIcon(size: 167, outputPath: "\(iconDir)/icon-167.png")
 generateIcon(size: 152, outputPath: "\(iconDir)/icon-152.png")
 generateIcon(size: 120, outputPath: "\(iconDir)/icon-120.png")
-generateIcon(size: 76, outputPath: "\(iconDir)/icon-76.png")

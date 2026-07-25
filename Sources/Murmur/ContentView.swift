@@ -772,10 +772,11 @@ struct ContentView: View {
         // simply "en-US"), so activeInputModes cannot reliably identify the
         // extension. Use the extension's App Group handshake, which is set only
         // after iOS has actually loaded Murmur as a keyboard.
-        withAnimation {
-            keyboardIsEnabled = SharedDefaults.isKeyboardActive()
-            fullAccessGranted = SharedDefaults.isFullAccessGranted()
-        }
+        // This state can change twice during foreground activation while iOS
+        // refreshes input modes. Animating the LazyVStack insertion/removal
+        // briefly overlaps the banner, stats card, and first section header.
+        keyboardIsEnabled = SharedDefaults.isKeyboardActive()
+        fullAccessGranted = SharedDefaults.isFullAccessGranted()
     }
 
     private func openKeyboardSettings() {
@@ -952,7 +953,7 @@ struct ContentView: View {
                     rawText = try await transcriptionService.transcribe(audioURL: audioURL)
                 }
 
-                let cleanedText = TextProcessor.process(rawText)
+                let cleanedText = await TranscriptCleanupService.process(rawText)
 
                 if didFallback {
                     showCloudFallbackToast = true
@@ -1158,6 +1159,12 @@ struct SettingsView: View {
         CloudProvider(rawValue: cloudProviderRaw) ?? .groq
     }
 
+    private var appVersion: String {
+        Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleShortVersionString"
+        ) as? String ?? "—"
+    }
+
     private var selectedMode: Binding<AppearanceMode> {
         Binding(
             get: { AppearanceMode(rawValue: appearanceMode) ?? .auto },
@@ -1205,6 +1212,28 @@ struct SettingsView: View {
                     }
                 }
                 .disabled(transcriptionService.modelState == .loading || transcriptionService.isTranscribing)
+            }
+
+            Section {
+                NavigationLink {
+                    PersonalDictionaryView()
+                } label: {
+                    Label {
+                        HStack {
+                            Text("Personal Dictionary")
+                            Spacer()
+                            Text("\(PersonalDictionary.enabledEntries.count)")
+                                .foregroundStyle(.secondary)
+                        }
+                    } icon: {
+                        Image(systemName: "text.book.closed")
+                            .foregroundStyle(murmurAccent)
+                    }
+                }
+            } header: {
+                Text("Recognition")
+            } footer: {
+                Text("Teach Murmur names, technical terms, and preferred spellings. Entries stay on this device; enabled spellings may be sent as recognition hints when cloud dictation is on.")
             }
 
             // MARK: - Cloud Dictation Section
@@ -1372,7 +1401,7 @@ struct SettingsView: View {
 
             Section {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Murmur v2.4")
+                    Text("Murmur v\(appVersion)")
                         .font(.headline)
                     Text(cloudDictationEnabled
                          ? "Speech-to-text via \(selectedProvider.displayName). On-device fallback always available."
@@ -1436,11 +1465,6 @@ struct SettingsView: View {
         loadCachedModels()
     }
 
-    /// Kept as a convenience alias used by provider-change callsites.
-    private func loadAPIKeyForCurrentProvider() {
-        loadStateForCurrentProvider()
-    }
-
     private func loadCachedModels() {
         if let cached = CloudTranscriptionService.cachedModels(for: selectedProvider) {
             availableModels = cached
@@ -1494,6 +1518,195 @@ struct SettingsView: View {
         case .invalidKey: return .red
         case .testing: return murmurAccent
         case .error: return .orange
+        }
+    }
+}
+
+// MARK: - Personal Dictionary
+
+struct PersonalDictionaryView: View {
+    @State private var entries = PersonalDictionary.entries
+    @State private var preferredSpelling = ""
+    @State private var spokenAliases = ""
+    @State private var editingEntry: PersonalDictionaryEntry?
+
+    private var canAdd: Bool {
+        !preferredSpelling.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var body: some View {
+        List {
+            Section {
+                TextField("Preferred spelling", text: $preferredSpelling)
+                    .textInputAutocapitalization(.words)
+                    .autocorrectionDisabled()
+
+                TextField("Sounds like (optional)", text: $spokenAliases)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+
+                Button {
+                    addEntry()
+                } label: {
+                    Label("Add to Dictionary", systemImage: "plus.circle.fill")
+                }
+                .disabled(!canAdd)
+            } header: {
+                Text("New Entry")
+            } footer: {
+                Text("Add comma-separated pronunciations or common mishearings, such as “shiv on” for “Siobhan.”")
+            }
+
+            Section {
+                if entries.isEmpty {
+                    ContentUnavailableView(
+                        "No Dictionary Entries",
+                        systemImage: "text.book.closed",
+                        description: Text("Add words Murmur should recognize and spell consistently.")
+                    )
+                } else {
+                    ForEach(entries) { entry in
+                        Button {
+                            editingEntry = entry
+                        } label: {
+                            HStack(spacing: 12) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(entry.phrase)
+                                        .foregroundStyle(.primary)
+                                    if !entry.spokenAliases.isEmpty {
+                                        Text(entry.spokenAliases.joined(separator: ", "))
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+
+                                Spacer()
+
+                                Toggle(
+                                    "Enabled",
+                                    isOn: Binding(
+                                        get: { entry.isEnabled },
+                                        set: { setEnabled(entry.id, $0) }
+                                    )
+                                )
+                                .labelsHidden()
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .onDelete(perform: deleteEntries)
+                }
+            } header: {
+                Text("Words & Phrases")
+            } footer: {
+                if !entries.isEmpty {
+                    Text("Tap an entry to edit it. Swipe left to delete.")
+                }
+            }
+        }
+        .navigationTitle("Personal Dictionary")
+        .navigationBarTitleDisplayMode(.inline)
+        .tint(murmurAccent)
+        .sheet(item: $editingEntry) { entry in
+            NavigationStack {
+                PersonalDictionaryEntryEditor(entry: entry) { updatedEntry in
+                    guard let index = entries.firstIndex(where: { $0.id == updatedEntry.id }) else {
+                        return
+                    }
+                    entries[index] = updatedEntry
+                    save()
+                }
+            }
+        }
+    }
+
+    private func addEntry() {
+        let aliases = spokenAliases
+            .split(separator: ",")
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        entries.append(
+            PersonalDictionaryEntry(
+                phrase: preferredSpelling,
+                spokenAliases: aliases
+            )
+        )
+        save()
+        preferredSpelling = ""
+        spokenAliases = ""
+    }
+
+    private func setEnabled(_ id: UUID, _ enabled: Bool) {
+        guard let index = entries.firstIndex(where: { $0.id == id }) else { return }
+        entries[index].isEnabled = enabled
+        save()
+    }
+
+    private func deleteEntries(at offsets: IndexSet) {
+        entries.remove(atOffsets: offsets)
+        save()
+    }
+
+    private func save() {
+        PersonalDictionary.save(entries)
+        entries = PersonalDictionary.entries
+    }
+}
+
+struct PersonalDictionaryEntryEditor: View {
+    @State private var phrase: String
+    @State private var aliases: String
+    @State private var isEnabled: Bool
+
+    let entry: PersonalDictionaryEntry
+    let onSave: (PersonalDictionaryEntry) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    init(entry: PersonalDictionaryEntry, onSave: @escaping (PersonalDictionaryEntry) -> Void) {
+        self.entry = entry
+        self.onSave = onSave
+        _phrase = State(initialValue: entry.phrase)
+        _aliases = State(initialValue: entry.spokenAliases.joined(separator: ", "))
+        _isEnabled = State(initialValue: entry.isEnabled)
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                TextField("Preferred spelling", text: $phrase)
+                    .textInputAutocapitalization(.words)
+                    .autocorrectionDisabled()
+                TextField("Sounds like", text: $aliases)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                Toggle("Enabled", isOn: $isEnabled)
+            } footer: {
+                Text("Use comma-separated pronunciations or common mishearings.")
+            }
+        }
+        .navigationTitle("Edit Entry")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Cancel") { dismiss() }
+            }
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") {
+                    var updated = entry
+                    updated.phrase = phrase
+                    updated.spokenAliases = aliases
+                        .split(separator: ",")
+                        .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+                        .filter { !$0.isEmpty }
+                    updated.isEnabled = isEnabled
+                    onSave(updated)
+                    dismiss()
+                }
+                .disabled(phrase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
         }
     }
 }

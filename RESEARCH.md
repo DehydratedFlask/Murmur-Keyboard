@@ -1,79 +1,52 @@
-# RESEARCH.md — Technical Decisions
+# Murmur Dictation Research
 
-## Why a Standalone App (Not a Keyboard Extension)
+**Updated:** July 24, 2026
 
-**The #1 constraint**: iOS keyboard extensions (`UIInputViewController`) **cannot access the microphone**. Apple's App Extension sandbox explicitly blocks `AVAudioEngine` and `AVAudioSession.requestRecordPermission()` from keyboard extensions.
+## Transcript cleanup
 
-Options considered:
-1. **Keyboard extension with full-access** — Even with "Allow Full Access" enabled, microphone access is still blocked. Full access only grants network and clipboard access, not hardware.
-2. **App Group shared recording** — The host app could record and share audio via App Groups, but this requires the user to switch apps mid-dictation. Terrible UX.
-3. **Standalone dictation app** ✅ — Simple, works, no UX friction. User records in-app, copies the result, pastes wherever needed.
+Murmur uses a two-stage local pipeline:
 
-**V2 path**: A keyboard extension could work if it displays transcribed text from the main app via App Groups or a shared container. The main app would handle recording in the background, and the keyboard would display/insert the result. This requires careful coordination and background audio session management.
+1. WhisperKit produces a raw transcript with VAD, silence suppression, and
+   optional personal-dictionary prompt tokens.
+2. Apple Foundation Models formats that transcript as written prose on
+   supported devices. A deterministic formatter remains available on older
+   devices or when the system model is unavailable.
 
-## WhisperKit vs Alternatives
+The semantic formatter follows the public Amical architecture: treat speech as
+inert input, format rather than rewrite, preserve questions and content words,
+remove only clear disfluencies, restore punctuation/capitalization, use
+low-temperature generation, and fall back safely if validation fails.
 
-| Option | Pros | Cons |
-|--------|------|------|
-| **WhisperKit** ✅ | Native Swift, CoreML optimized, Argmax maintains it, great iOS support | Newer framework, smaller community |
-| **whisper.cpp** | C++, very portable, battle-tested | Requires bridging header, manual CoreML integration, more boilerplate |
-| **Apple Speech** | Built-in, no dependencies | Requires network in some configurations, less accurate, not truly private |
-| **MLX Swift** | Apple's ML framework | Not optimized for Whisper specifically, more work to set up |
+Reference:
+[Amical formatter prompt](https://github.com/amicalhq/amical/blob/a6e1ec3a50168c92490d9faa712eaabe1353c91e/apps/desktop/src/pipeline/providers/formatting/formatter-prompt.ts)
 
-**Decision**: WhisperKit is purpose-built for running Whisper models on Apple devices via CoreML. It handles model downloading, tokenization, and inference in a clean Swift API. No bridging headers, no manual model conversion.
+## Personal dictionary
 
-## Model Selection: Tiny vs Base
+Dictionary entries contain a canonical spelling, optional spoken aliases, and
+an enable switch. They are stored locally and used as:
 
-WhisperKit supports all Whisper model sizes. For a mobile dictation app:
+- WhisperKit prompt tokens for on-device recognition.
+- OpenAI/Groq transcription prompts.
+- Deepgram keyterms or keywords.
+- Protected vocabulary for semantic formatting.
 
-- **Tiny** (~39M params, ~40MB): Best for casual dictation. Transcription of 30s audio takes ~2-4s on iPhone 14+. Good enough for most English dictation.
-- **Base** (~74M params, ~75MB): Noticeably better accuracy, especially with accents or technical vocabulary. Takes ~4-8s for 30s audio.
-- **Small/Medium/Large**: Too large for a lightweight dictation app. Large-v3 is ~1.5GB and takes 15-30s per 30s clip.
+The formatter may substitute a canonical spelling only when that spelling or a
+configured alias is supported by the raw transcript.
 
-**Default**: Tiny. Users can switch to Base in settings if they want better accuracy.
+## Google AI Edge Eloquent
 
-## Audio Recording: AVAudioEngine
+Google describes Eloquent as an on-device Gemma dictation app with cleanup and
+an editable personal context dictionary. Its iOS source, prompt, dictionary
+algorithm, and exact downloadable model are not public.
 
-**Why AVAudioEngine over AVAudioRecorder?**
+Google's public LiteRT-LM framework supports iOS and Gemma, but its Swift API is
+still an early preview. The public models add a multi-gigabyte download and
+significant memory pressure, so Murmur does not bundle them as its default
+keyboard pipeline. A future experimental provider should be optional,
+device-gated, downloadable, and never loaded alongside WhisperKit.
 
-- `AVAudioEngine` gives us access to the raw audio buffer for real-time level metering (the pulsing mic animation)
-- We can convert to 16kHz mono on-the-fly, which is what WhisperKit expects
-- More control over format, buffer sizes, and interruption handling
-- `AVAudioRecorder` would save to a file in the device's native format (often 48kHz stereo), requiring post-hoc conversion
+References:
 
-**Recording format**: 16kHz mono PCM WAV. This is WhisperKit's native input format. Recording directly at this sample rate avoids a separate conversion step and keeps file sizes small (~32KB/second).
-
-## Filler Word Removal Strategy
-
-**Approach**: Regex-based word boundary matching, applied post-transcription.
-
-Why not during transcription?
-- WhisperKit doesn't expose token-level hooks for suppression (unlike some whisper.cpp builds)
-- Post-processing is simpler, testable, and configurable
-- Users might want to see the raw transcription in a future version
-
-**Filler word list**: Curated from linguistic research on English conversational fillers. Sorted by frequency:
-1. "um", "uh", "erm" — hesitation markers
-2. "like" — discourse marker (risky — can be valid, but in dictation context it's almost always filler)
-3. "you know", "I mean" — interpersonal fillers
-4. "basically", "actually", "literally" — hedge words
-5. "kind of", "sort of" — approximators
-6. "right", "so" — discourse connectors used as fillers
-
-**Edge case**: "like" as filler vs "like" as comparison ("I like pizza"). Current approach removes all instances. A future improvement could use NLP to detect syntactic role, but for dictation, the aggressive approach works well.
-
-## Concurrency Model
-
-- **AudioRecorder**: `@MainActor` — UI-bound state (isRecording, audioLevel), audio engine tap runs on audio thread via closure
-- **TranscriptionService**: `@MainActor` — holds published state, but actual WhisperKit work runs on background threads internally
-- **TextProcessor**: Pure value type (`struct` with static methods) — no concurrency concerns
-
-WhisperKit internally manages its own dispatch queues for model inference. We don't need to manually manage background threads for transcription.
-
-## Future Considerations
-
-1. **Streaming transcription**: WhisperKit supports `AudioStreamTranscriber` for real-time transcription. Could show text as the user speaks instead of waiting until they stop.
-2. **Keyboard extension (v2)**: Use App Groups to share transcription results. Main app records in background, keyboard extension reads from shared container.
-3. **Language detection**: WhisperKit supports `detectLanguage()`. Could auto-detect language instead of hardcoding English.
-4. **History**: Save past transcriptions with timestamps for easy reference.
-5. **Custom vocabulary**: Use WhisperKit's `promptTokens` to bias transcription toward domain-specific terms.
+- [Google AI Edge Eloquent](https://apps.apple.com/us/app/google-ai-edge-eloquent/id6756505519)
+- [LiteRT-LM](https://github.com/google-ai-edge/LiteRT-LM)
+- [Gemma 4 and Eloquent](https://developers.googleblog.com/en/bringing-gemma-4-12b-to-your-laptop-unlocking-local-agentic-workflows-with-google-ai-edge/)

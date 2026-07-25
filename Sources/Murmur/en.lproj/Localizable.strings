@@ -54,14 +54,8 @@
 "Whisper Model" = "Whisper Model";
 "Tiny is fastest with slightly lower accuracy. Base is more accurate but uses more memory." = "Tiny is fastest with slightly lower accuracy. Base is more accurate but uses more memory.";
 "Reload Model" = "Reload Model";
-"Murmur v1.2.0" = "Murmur v1.2.0";
-"On-device speech-to-text powered by WhisperKit.\nNo data leaves your device." = "On-device speech-to-text powered by WhisperKit.\nNo data leaves your device.";
 "Settings" = "Settings";
 "Done" = "Done";
-
-/* MenuView */
-"Home" = "Home";
-"History" = "History";
 
 /* KeyboardView — Bottom Row Keys */
 "ABC" = "ABC";
