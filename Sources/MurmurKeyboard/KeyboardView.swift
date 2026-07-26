@@ -143,13 +143,9 @@ struct KeyboardView: View {
                 viewModel.handleMurmurButtonTap()
             } label: {
                 HStack(spacing: 5) {
-                    Image(systemName: viewModel.hasPendingDictation
-                        ? "doc.on.clipboard.fill"
-                        : (viewModel.isModelWarm ? "mic.fill" : "waveform"))
+                    Image(systemName: dictationButtonImage)
                         .font(.system(size: 13, weight: .semibold))
-                    Text(viewModel.hasPendingDictation
-                        ? "Paste dictation"
-                        : (viewModel.isModelWarm ? "Murmur" : "Load Murmur"))
+                    Text(dictationButtonTitle)
                         .font(.system(size: 14, weight: .medium))
                 }
                 .foregroundStyle(murmurButtonColor)
@@ -158,13 +154,13 @@ struct KeyboardView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .disabled(!viewModel.hasFullAccess)
-            .accessibilityLabel(viewModel.hasPendingDictation ? "Paste dictation" : "Start Murmur dictation")
-            .accessibilityHint(viewModel.hasPendingDictation
-                ? "Inserts your completed Murmur dictation into this field."
-                : (viewModel.hasFullAccess
-                    ? "Opens the Murmur app to capture speech."
-                    : "Enable Full Access to use dictation."))
+            .disabled(
+                !viewModel.hasFullAccess ||
+                viewModel.dictationPhase == .preparing ||
+                viewModel.dictationPhase == .processing
+            )
+            .accessibilityLabel(dictationButtonAccessibilityLabel)
+            .accessibilityHint(dictationButtonAccessibilityHint)
 
             Rectangle()
                 .fill(separatorColor)
@@ -172,9 +168,9 @@ struct KeyboardView: View {
 
             HStack(spacing: 4) {
                 Circle()
-                    .fill(viewModel.isModelWarm ? Color.green : Color.orange)
+                    .fill(dictationStatusColor)
                     .frame(width: 6, height: 6)
-                Text(viewModel.isModelWarm ? "Ready" : "Loading")
+                Text(dictationStatusTitle)
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.secondary)
             }
@@ -182,6 +178,75 @@ struct KeyboardView: View {
             .frame(height: predictionRowHeight)
         }
         .background(predictionRowBackground)
+    }
+
+    private var dictationButtonImage: String {
+        if viewModel.hasPendingDictation { return "checkmark.circle.fill" }
+        switch viewModel.dictationPhase {
+        case .recording: return "stop.fill"
+        case .preparing, .processing: return "ellipsis"
+        case .ready: return "checkmark.circle.fill"
+        case .idle, .failed: return viewModel.isModelWarm ? "mic.fill" : "waveform"
+        }
+    }
+
+    private var dictationButtonTitle: String {
+        if viewModel.hasPendingDictation { return "Insert" }
+        switch viewModel.dictationPhase {
+        case .recording: return "Stop"
+        case .preparing: return "Starting…"
+        case .processing: return "Transcribing…"
+        case .ready: return "Insert"
+        case .idle, .failed: return "Murmur"
+        }
+    }
+
+    private var dictationStatusTitle: String {
+        switch viewModel.dictationPhase {
+        case .recording: return "Listening"
+        case .preparing: return "Starting"
+        case .processing: return "Working"
+        case .ready: return "Done"
+        case .failed: return "Retry"
+        case .idle: return viewModel.isModelWarm ? "Ready" : "Loading"
+        }
+    }
+
+    private var dictationStatusColor: Color {
+        switch viewModel.dictationPhase {
+        case .recording: return .red
+        case .preparing, .processing: return .orange
+        case .ready: return .green
+        case .failed: return .red
+        case .idle: return viewModel.isModelWarm ? .green : .orange
+        }
+    }
+
+    private var dictationButtonAccessibilityLabel: String {
+        if viewModel.hasPendingDictation { return "Insert completed dictation" }
+        switch viewModel.dictationPhase {
+        case .recording: return "Stop Murmur dictation"
+        case .preparing: return "Murmur dictation is starting"
+        case .processing: return "Murmur is transcribing"
+        case .ready: return "Insert completed dictation"
+        case .idle, .failed: return "Start Murmur dictation"
+        }
+    }
+
+    private var dictationButtonAccessibilityHint: String {
+        if !viewModel.hasFullAccess {
+            return "Enable Full Access to use dictation."
+        }
+        switch viewModel.dictationPhase {
+        case .recording:
+            return "Stops recording. Murmur will transcribe, clean up, and insert the result automatically."
+        case .preparing, .processing:
+            return "Please wait."
+        case .ready:
+            return "Inserts the completed text into this field."
+        case .idle, .failed:
+            return "Briefly opens Murmur so iOS can start microphone recording. Use the system back control to return here."
+        }
     }
 
     // MARK: - Letters Layout (matches Apple QWERTY)

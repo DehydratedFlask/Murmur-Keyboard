@@ -44,6 +44,18 @@ enum SharedDefaults {
     /// Optional detail describing why the session was abandoned.
     private static let dictationFailureReasonKey = "dictationFailureReason"
 
+    /// Current phase of the keyboard-initiated dictation handoff.
+    private static let dictationPhaseKey = "dictationPhase"
+
+    /// Session owning the current dictation phase.
+    private static let dictationPhaseSessionIDKey = "dictationPhaseSessionID"
+
+    /// Whether the keyboard has asked the containing app to stop recording.
+    private static let dictationStopRequestedKey = "dictationStopRequested"
+
+    /// Session associated with the stop request.
+    private static let dictationStopSessionIDKey = "dictationStopSessionID"
+
     /// Whether the Whisper model is actually ready for a warm handoff.
     private static let modelReadyKey = "modelReady"
 
@@ -67,6 +79,7 @@ enum SharedDefaults {
         } else {
             suite.removeObject(forKey: pendingTextSessionIDKey)
         }
+        setDictationPhase(.ready, sessionID: sessionID)
         // Signal the keyboard that a transcription result is available
         DarwinNotificationCenter.post(.transcriptionReady)
     }
@@ -135,7 +148,10 @@ enum SharedDefaults {
         suite.set(Date().timeIntervalSince1970, forKey: dictationSessionTimestampKey)
         suite.set(false, forKey: dictationAbandonedKey)
         suite.removeObject(forKey: dictationFailureReasonKey)
+        suite.set(false, forKey: dictationStopRequestedKey)
+        suite.removeObject(forKey: dictationStopSessionIDKey)
         clearPendingText()
+        setDictationPhase(.preparing, sessionID: sessionID)
     }
 
     static func currentDictationSessionID() -> String? {
@@ -166,7 +182,9 @@ enum SharedDefaults {
         suite.removeObject(forKey: dictationSessionIDKey)
         suite.removeObject(forKey: dictationSessionTimestampKey)
         suite.removeObject(forKey: dictationFailureReasonKey)
-        suite.set(false, forKey: dictationAbandonedKey)
+        suite.set(false, forKey: dictationStopRequestedKey)
+        suite.removeObject(forKey: dictationStopSessionIDKey)
+        setDictationPhase(.idle, sessionID: nil)
     }
 
     static func abandonDictationSession(reason: String? = nil) {
@@ -176,6 +194,10 @@ enum SharedDefaults {
         } else {
             suite.removeObject(forKey: dictationFailureReasonKey)
         }
+        setDictationPhase(
+            .failed,
+            sessionID: suite.string(forKey: dictationSessionIDKey)
+        )
         // Signal the keyboard that the dictation was abandoned
         DarwinNotificationCenter.post(.dictationAbandoned)
     }
@@ -189,6 +211,44 @@ enum SharedDefaults {
         suite.set(false, forKey: dictationAbandonedKey)
         suite.removeObject(forKey: dictationFailureReasonKey)
         return payload
+    }
+
+    // MARK: - Dictation State
+
+    static func setDictationPhase(_ phase: DictationPhase, sessionID: String?) {
+        suite.set(phase.rawValue, forKey: dictationPhaseKey)
+        if let sessionID, !sessionID.isEmpty {
+            suite.set(sessionID, forKey: dictationPhaseSessionIDKey)
+        } else {
+            suite.removeObject(forKey: dictationPhaseSessionIDKey)
+        }
+        DarwinNotificationCenter.post(.dictationStateChanged)
+    }
+
+    static func dictationState() -> DictationState {
+        let phase = suite.string(forKey: dictationPhaseKey)
+            .flatMap(DictationPhase.init(rawValue:)) ?? .idle
+        return DictationState(
+            phase: phase,
+            sessionID: suite.string(forKey: dictationPhaseSessionIDKey)
+        )
+    }
+
+    static func requestDictationStop(sessionID: String) {
+        suite.set(true, forKey: dictationStopRequestedKey)
+        suite.set(sessionID, forKey: dictationStopSessionIDKey)
+        DarwinNotificationCenter.post(.dictationStopRequested)
+    }
+
+    static func consumeDictationStopRequest(matching sessionID: String?) -> Bool {
+        guard suite.bool(forKey: dictationStopRequestedKey) else { return false }
+        let requestedSessionID = suite.string(forKey: dictationStopSessionIDKey)
+        guard requestedSessionID == nil || requestedSessionID == sessionID else {
+            return false
+        }
+        suite.set(false, forKey: dictationStopRequestedKey)
+        suite.removeObject(forKey: dictationStopSessionIDKey)
+        return true
     }
 
     // MARK: - Model Ready
@@ -266,4 +326,18 @@ struct PendingTextPayload: Sendable {
 struct AbandonedSessionPayload: Sendable {
     let sessionID: String?
     let reason: String?
+}
+
+enum DictationPhase: String, Sendable {
+    case idle
+    case preparing
+    case recording
+    case processing
+    case ready
+    case failed
+}
+
+struct DictationState: Sendable {
+    let phase: DictationPhase
+    let sessionID: String?
 }

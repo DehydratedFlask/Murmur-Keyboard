@@ -27,6 +27,12 @@ enum DarwinNotificationCenter {
         /// App → Keyboard: "Model readiness changed."
         case modelStateChanged = "com.murmur.darwin.modelStateChanged"
 
+        /// Either process: the shared dictation phase changed.
+        case dictationStateChanged = "com.murmur.darwin.dictationStateChanged"
+
+        /// Keyboard → App: the user tapped Stop in the keyboard.
+        case dictationStopRequested = "com.murmur.darwin.dictationStopRequested"
+
         var cfName: CFNotificationName {
             CFNotificationName(rawValue as CFString)
         }

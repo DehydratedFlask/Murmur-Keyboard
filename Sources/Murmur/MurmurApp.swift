@@ -54,7 +54,17 @@ struct MurmurApp: App {
     }
 }
 
-/// Shared app state for URL scheme handling
-class AppState: ObservableObject {
+/// Shared app state for URL-scheme and cross-process keyboard handling.
+@MainActor
+final class AppState: ObservableObject {
     @Published var shouldStartDictation = false
+    @Published var shouldStopDictation = false
+
+    init() {
+        DarwinNotificationCenter.observe(.dictationStopRequested) { [weak self] in
+            Task { @MainActor in
+                self?.shouldStopDictation = true
+            }
+        }
+    }
 }

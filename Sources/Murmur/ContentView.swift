@@ -219,6 +219,11 @@ struct ContentView: View {
                 dictationTask = handleDictationRequest()
             }
         }
+        .onChange(of: appState.shouldStopDictation) {
+            guard appState.shouldStopDictation else { return }
+            appState.shouldStopDictation = false
+            handleKeyboardStopRequest()
+        }
         .onChange(of: recorder.vadDidAutoStop) {
             if recorder.vadDidAutoStop && recorder.isRecording {
                 // VAD detected silence after speech — auto-stop and transcribe
@@ -871,6 +876,22 @@ struct ContentView: View {
         clearErrorMessage()
         do {
             try await recorder.startRecording()
+            if isDictationFromKeyboard, let keyboardDictationSessionID {
+                SharedDefaults.setDictationPhase(
+                    .recording,
+                    sessionID: keyboardDictationSessionID
+                )
+                keyboardCompletionMessage =
+                    "Recording started. Use iOS’s Back control to return to your app, then tap Stop on the Murmur keyboard."
+
+                // The request flag is persistent, so this also catches a stop
+                // signal delivered while the app was finishing startup.
+                if SharedDefaults.consumeDictationStopRequest(
+                    matching: keyboardDictationSessionID
+                ) {
+                    stopAndTranscribe()
+                }
+            }
         } catch {
             if case RecordingError.noPermission = error {
                 showMicPermissionAlert = recorder.permissionDenied
@@ -883,6 +904,13 @@ struct ContentView: View {
     }
 
     private func stopAndTranscribe() {
+        if isDictationFromKeyboard {
+            SharedDefaults.setDictationPhase(
+                .processing,
+                sessionID: keyboardDictationSessionID
+            )
+        }
+
         guard let audioURL = recorder.stopRecording() else {
             if isDictationFromKeyboard {
                 signalKeyboardDictationAbandoned(reason: NSLocalizedString("No audio was recorded.", comment: "Keyboard dictation missing audio"))
@@ -974,7 +1002,7 @@ struct ContentView: View {
 
                     if isDictationFromKeyboard {
                         SharedDefaults.setPendingText(cleanedText, sessionID: keyboardDictationSessionID)
-                        keyboardCompletionMessage = "Transcription ready. Switch back to your previous app to paste it."
+                        keyboardCompletionMessage = "Transcription ready. Murmur will insert it when the keyboard is visible."
                         successHaptic.notificationOccurred(.success)
                         try? await Task.sleep(for: .milliseconds(800))
                     }
@@ -999,6 +1027,20 @@ struct ContentView: View {
             }
         }
         transcriptionTask = task
+    }
+
+    private func handleKeyboardStopRequest() {
+        guard isDictationFromKeyboard,
+              SharedDefaults.consumeDictationStopRequest(
+                matching: keyboardDictationSessionID
+              )
+        else {
+            return
+        }
+
+        if recorder.isRecording {
+            stopAndTranscribe()
+        }
     }
 
     // MARK: - Memory Warning

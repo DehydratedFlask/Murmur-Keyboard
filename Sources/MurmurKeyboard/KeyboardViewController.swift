@@ -119,7 +119,6 @@ class KeyboardViewController: UIInputViewController {
 
     private func checkForPendingText() {
         viewModel.restoreActiveDictationSession()
-        viewModel.refreshSharedState()
 
         if let abandoned = SharedDefaults.consumeAbandonedDictationSession() {
             if abandoned.sessionID == nil || abandoned.sessionID == viewModel.activeSessionID {
@@ -130,6 +129,12 @@ class KeyboardViewController: UIInputViewController {
                 return
             }
         }
+
+        if viewModel.insertPendingDictationIfAvailable() {
+            return
+        }
+
+        viewModel.refreshSharedState()
 
         if viewModel.activeSessionID != nil,
            let age = SharedDefaults.dictationSessionAge(),
@@ -162,19 +167,25 @@ class KeyboardViewController: UIInputViewController {
                 self?.viewModel.refreshSharedState()
             }
         }
+        DarwinNotificationCenter.observe(.dictationStateChanged) { [weak self] in
+            Task { @MainActor in
+                self?.checkForPendingText()
+            }
+        }
     }
 
     private func stopDarwinObservers() {
         DarwinNotificationCenter.removeObserver(.transcriptionReady)
         DarwinNotificationCenter.removeObserver(.dictationAbandoned)
         DarwinNotificationCenter.removeObserver(.modelStateChanged)
+        DarwinNotificationCenter.removeObserver(.dictationStateChanged)
     }
 
     private func startPendingTextTimer() {
         stopPendingTextTimer()
         // Fallback safety-net poll at a relaxed interval — Darwin notifications
         // handle the fast path; this catches edge cases where a notification is missed.
-        pendingTextTimer = Timer.scheduledTimer(withTimeInterval: 4.0, repeats: true) { [weak self] _ in
+        pendingTextTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.checkForPendingText()
             }
@@ -208,6 +219,7 @@ final class KeyboardViewModel: ObservableObject {
     @Published var handoffError: String?
     @Published var isModelWarm = false
     @Published var hasPendingDictation = false
+    @Published var dictationPhase: DictationPhase = .idle
     @Published var keyboardType: UIKeyboardType = .default
     @Published var returnKeyType: UIReturnKeyType = .default
     @Published var autocapitalizationType: UITextAutocapitalizationType = .sentences
@@ -257,6 +269,18 @@ final class KeyboardViewModel: ObservableObject {
         } ?? false
         if hasPendingDictation != canPaste {
             hasPendingDictation = canPaste
+        }
+
+        let sharedState = SharedDefaults.dictationState()
+        let newPhase: DictationPhase
+        if let activeSessionID,
+           sharedState.sessionID == nil || sharedState.sessionID == activeSessionID {
+            newPhase = sharedState.phase
+        } else {
+            newPhase = .idle
+        }
+        if dictationPhase != newPhase {
+            dictationPhase = newPhase
         }
     }
 
@@ -553,20 +577,29 @@ final class KeyboardViewModel: ObservableObject {
     func handleMurmurButtonTap() {
         refreshSharedState()
         if hasPendingDictation {
-            pastePendingDictation()
-        } else {
+            _ = insertPendingDictationIfAvailable()
+            return
+        }
+
+        switch dictationPhase {
+        case .recording:
+            requestStop()
+        case .preparing, .processing, .ready:
+            break
+        case .idle, .failed:
             openMurmurForDictation()
         }
     }
 
-    private func pastePendingDictation() {
+    @discardableResult
+    func insertPendingDictationIfAvailable() -> Bool {
         guard let payload = SharedDefaults.peekPendingTextPayload(),
               let activeSessionID,
               payload.sessionID == nil || payload.sessionID == activeSessionID,
               let consumed = SharedDefaults.consumePendingTextPayload()
         else {
             refreshSharedState()
-            return
+            return false
         }
 
         triggerMediumHaptic()
@@ -575,6 +608,15 @@ final class KeyboardViewModel: ObservableObject {
         self.activeSessionID = nil
         refreshSharedState()
         autoCapitalize()
+        return true
+    }
+
+    private func requestStop() {
+        guard let activeSessionID else { return }
+        triggerMediumHaptic()
+        SharedDefaults.setDictationPhase(.processing, sessionID: activeSessionID)
+        SharedDefaults.requestDictationStop(sessionID: activeSessionID)
+        refreshSharedState()
     }
 
     private func textForInsertion(_ text: String) -> String {
@@ -585,7 +627,11 @@ final class KeyboardViewModel: ObservableObject {
             return text
         }
 
-        let previousNeedsSeparation = previousCharacter.isLetter || previousCharacter.isNumber
+        let spacingPunctuation: Set<Character> = [".", ",", "!", "?", ";", ":", ")", "]", "}"]
+        let previousNeedsSeparation =
+            previousCharacter.isLetter ||
+            previousCharacter.isNumber ||
+            spacingPunctuation.contains(previousCharacter)
         let insertedStartsInline = trimmed.first?.isLetter == true || trimmed.first?.isNumber == true
         return previousNeedsSeparation && insertedStartsInline ? " " + text : text
     }
