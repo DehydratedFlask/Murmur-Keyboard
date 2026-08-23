@@ -1,97 +1,83 @@
+<div align="center">
+
 # Murmur 3
 
-Murmur is a privacy-first voice-to-text keyboard for iPhone. It combines local
-Whisper transcription with an Eloquent-inspired polishing pass so the result
-reads like text you intended to write—not a verbatim dump of every pause,
-stutter, or correction.
+**The voice keyboard that speaks *your* language.**
+On-device Whisper transcription, polished into the text you meant to write — never a verbatim dump of pauses and stutters.
 
-## What Murmur does
+<img src="screenshots/screenshot-promax-main.png" alt="Murmur running on iPhone" width="320" />
 
-- Transcribes speech on-device with
-  [WhisperKit](https://github.com/argmaxinc/WhisperKit).
-- Restores sentence boundaries, capitalization, commas, periods, question
-  marks, contractions, and paragraph breaks.
-- Removes filled pauses, repeated words and phrases, abandoned fragments,
-  explicit self-corrections, and ASR artifacts such as `[Pause]`,
-  `[BLANK_AUDIO]`, and tool tokens.
-- Preserves meaning-bearing words, names, numbers, questions, negation, and the
-  speaker's voice instead of paraphrasing the message.
-- Provides an editable personal dictionary with preferred spellings, optional
-  “sounds like” aliases, and per-entry enable switches.
-- Uses dictionary entries to bias WhisperKit, supported cloud transcription
-  providers, and the local cleanup model.
-- Includes a custom iOS keyboard with a microphone handoff and automatic result
-  insertion when you return to the original app.
-- Supports iOS 17 and later while adopting Liquid Glass on newer systems.
+[![iOS](https://img.shields.io/badge/iOS-17+-0af?logo=ios&logoColor=white)](#development)
+[![Swift](https://img.shields.io/badge/swift-6-F05138?logo=swift)](https://swift.org)
+[![Privacy](https://img.shields.io/badge/transcription-on--device-10b981)](#privacy)
+[![Analytics](https://img.shields.io/badge/tracking-none-6366f1)](#privacy)
 
-Murmur does not provide predictive text, autocorrection, or swipe typing. Its
-focus is a familiar keyboard, reliable voice handoff, and polished dictation.
+</div>
 
-## How transcript polishing works
+---
 
-Murmur 3 uses a guarded two-stage pipeline:
+## Why Murmur
 
-1. WhisperKit transcribes 16 kHz audio with voice-activity detection, silence
+Dictation apps give you a transcript. Murmur gives you a **message**:
+
+- Transcribes speech on-device with [WhisperKit](https://github.com/argmaxinc/WhisperKit)
+- Restores sentence boundaries, capitalization, commas, periods, question marks, contractions, paragraph breaks
+- Removes filled pauses, repeated words, abandoned fragments, self-corrections, and ASR artifacts like `[Pause]` and `[BLANK_AUDIO]`
+- Preserves meaning-bearing words, names, numbers, negation — and your voice
+- Personal dictionary with preferred spellings, "sounds like" aliases, per-entry toggles
+- Custom iOS keyboard with microphone handoff and automatic result insertion
+- iOS 17+ with Liquid Glass adoption on newer systems
+
+No predictive text, no autocorrect, no swipe. Just a familiar keyboard with
+reliable voice handoff and polished dictation.
+
+## The pipeline: formatter, not rewriter
+
+Murmur runs a guarded two-stage process:
+
+1. **Transcribe** — WhisperKit handles 16 kHz audio with VAD, silence
    suppression, and personal-dictionary prompt tokens.
-2. On supported devices, Apple Foundation Models acts as a narrow formatter:
-   punctuation and disfluency cleanup are allowed; rewriting, summarizing,
-   translating, answering the transcript, and inventing facts are forbidden.
-3. A faithfulness validator rejects output that adds unsupported content,
-   changes protected numbers or negation, leaks model metadata, or diverges too
-   far from the raw transcript.
-4. If the local language model is unavailable or its result fails validation,
+2. **Polish** — on supported devices, Apple Foundation Models acts as a narrow
+   formatter: punctuation and disfluency cleanup allowed; rewriting,
+   summarizing, translating, or inventing facts forbidden.
+3. **Validate** — a faithfulness validator rejects output that adds
+   unsupported content, alters protected numbers/negation, leaks model
+   metadata, or drifts too far from the raw transcript.
+4. **Fall back** — if the local model is unavailable or fails validation,
    Murmur returns a conservative deterministic cleanup instead.
 
-This architecture follows the same core principle used by
-[Amical](https://github.com/amicalhq/amical): the model is a formatter, not a
-rewriter. Google AI Edge Eloquent also inspired the personal dictionary and the
-goal of producing ready-to-use prose, but Eloquent's iOS implementation and
-exact model are not public. Murmur does not bundle or claim to be Google's
-model.
+Architecture follows the core principle from
+[Amical](https://github.com/amicalhq/amical); Google's Eloquent inspired the
+personal dictionary and ready-to-use prose goal (its iOS implementation is not
+public — Murmur bundles nothing of it).
 
 ## Keyboard flow
 
-1. Install Murmur and open it once so the selected Whisper model can download.
-2. In iOS Settings, enable the Murmur keyboard and allow Full Access so the
-   extension can exchange the dictation result with the main app.
-3. Select Murmur in any text field and tap its microphone button.
-4. Speak in Murmur, stop recording, and return to the original app.
-5. The Murmur keyboard inserts the polished result.
+iOS doesn't let third-party keyboards record audio directly, so Murmur uses a
+handoff:
 
-iOS does not allow a third-party keyboard extension to record microphone audio
-directly. The app handoff is therefore required; audio recording and local
-models stay in the main app.
+1. Install Murmur and open it once so the Whisper model downloads.
+2. In iOS Settings, enable the keyboard + Full Access (for app↔extension exchange).
+3. Tap Murmur's microphone in any text field.
+4. Speak in Murmur, stop recording, return to your app.
+5. The polished result inserts automatically.
 
 ## Personal dictionary
 
-Open **Settings → Personal Dictionary** to add names, jargon, product names, or
-preferred capitalization. For example:
-
-- Preferred spelling: `Siobhan`
-- Sounds like: `shiv on`
-
-Entries are stored locally. If optional cloud dictation is enabled, active
-canonical spellings may be sent to the selected provider as recognition hints;
-aliases and the rest of the dictionary remain under Murmur's local controls.
+**Settings → Personal Dictionary**: add names, jargon, preferred
+capitalization (`Siobhan` ← "shiv on"). Stored locally; entries bias
+WhisperKit, optional cloud providers, and the local cleanup model.
 
 ## Privacy
 
-On-device dictation and cleanup remain local. Murmur has no analytics, tracking,
-account requirement, or content server. Optional cloud dictation is off by
-default; when enabled, audio and active dictionary spellings are sent directly
-to the provider selected in Settings. See the
-[Privacy Policy](PRIVACY_POLICY.md).
+On-device dictation and cleanup stay local. No analytics, tracking, account
+requirement, or content server. Optional cloud dictation is off by default;
+when enabled, audio and active dictionary spellings go only to the provider
+you choose. See the [Privacy Policy](PRIVACY_POLICY.md).
 
 ## Development
 
-Requirements:
-
-- iOS 17.0+
-- Xcode 27 beta (the project retains availability fallbacks for earlier iOS
-  releases)
-- Swift 6
-
-Build against the beta SDK:
+Requirements: iOS 17+, Xcode 27 beta, Swift 6.
 
 ```sh
 DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer \
@@ -102,22 +88,24 @@ DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer \
   build
 ```
 
-Run the transcript regression suite:
+Run the transcript regression suite (punctuation, fillers, stutters,
+corrections, ASR artifacts, prompt-injection resistance, dictionary aliases):
 
 ```sh
 DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer \
   xcrun swift test --parallel
 ```
 
-The test suite exercises punctuation, sentence boundaries, questions,
-contractions, contextual filler removal, stutters, repetitions, explicit
-corrections, ASR artifacts, prompt-injection resistance, and dictionary aliases.
-
 ## Support
 
-If Murmur is useful to you, you can
-[buy me a coffee](https://www.buymeacoffee.com/tgn5dq5j8xs).
+If Murmur is useful to you, [buy me a coffee](https://www.buymeacoffee.com/tgn5dq5j8xs).
 
 ## License
 
 MIT
+
+---
+
+<div align="center">
+<sub>Speak freely. Sound sharp.</sub>
+</div>
