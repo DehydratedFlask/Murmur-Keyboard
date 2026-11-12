@@ -64,8 +64,9 @@ class KeyboardViewController: UIInputViewController {
 
         // Explicit height so the system allocates space for the keyboard.
         // 48 (toolbar) + 8/3 (key padding) + 4×46 (key rows) + 3×12 (row
-        // spacing) + 36 (globe footer) ≈ 315
-        let desiredHeight = view.heightAnchor.constraint(equalToConstant: 318)
+        // spacing) ≈ 279. The system adds its own language-switch / dictation
+        // strip below this, so we don't reserve any room for it.
+        let desiredHeight = view.heightAnchor.constraint(equalToConstant: 282)
         desiredHeight.priority = .init(999)
         desiredHeight.isActive = true
         heightConstraint = desiredHeight
@@ -108,7 +109,7 @@ class KeyboardViewController: UIInputViewController {
         with coordinator: any UIViewControllerTransitionCoordinator
     ) {
         super.viewWillTransition(to: size, with: coordinator)
-        heightConstraint?.constant = size.width > size.height ? 262 : 318
+        heightConstraint?.constant = size.width > size.height ? 226 : 282
     }
 
     override func textDidChange(_ textInput: UITextInput?) {

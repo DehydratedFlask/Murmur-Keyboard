@@ -70,9 +70,6 @@ struct KeyboardView: View {
             } else {
                 toolbarRow
                 keyboardRows
-                if viewModel.showGlobeKey {
-                    keyboardFooter
-                }
             }
         }
         // Fill the height the system gave the input view. Without this the
@@ -510,24 +507,6 @@ struct KeyboardView: View {
             }
             returnKey
         }
-    }
-
-    /// The globe lives below the keys, like Apple's and Amical's keyboards,
-    /// instead of taking a slot on the bottom row.
-    private var keyboardFooter: some View {
-        HStack(spacing: 0) {
-            if viewModel.showGlobeKey {
-                InputModeSwitchButton(viewModel: viewModel)
-                    .frame(width: 44, height: 36)
-                    .accessibilityLabel("Switch keyboard")
-                    .accessibilityHint("Touch and hold to choose a keyboard.")
-            }
-
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 16)
-        .padding(.bottom, 2)
-        .frame(height: 36)
     }
 
     // MARK: - Key Views
