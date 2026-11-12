@@ -236,17 +236,9 @@ final class AudioRecorder: ObservableObject {
         }
 
         do {
-            audioSessionGeneration = try await Self.activateAudioSession()
+            audioSessionGeneration = try await Self.activateAudioSessionWithRetry()
         } catch {
-            // A session left in a bad state (for example after an interruption)
-            // refuses activation. Tear it down and try once more before giving
-            // up, so a second dictation doesn't fail with an audio error.
-            await Self.deactivateAudioSession(generation: nil)
-            do {
-                audioSessionGeneration = try await Self.activateAudioSession()
-            } catch {
-                throw RecordingError.engineStartFailed
-            }
+            throw RecordingError.engineStartFailed
         }
 
         let engine = AVAudioEngine()
@@ -441,6 +433,34 @@ final class AudioRecorder: ObservableObject {
 
     private nonisolated static func activateAudioSession() async throws -> Int {
         try await AudioSessionCoordinator.shared.activate()
+    }
+
+    /// Tries to activate, tearing down and retrying when the system refuses —
+    /// a session left behind by an interruption or another app can block the
+    /// first attempt.
+    private nonisolated static func activateAudioSessionWithRetry() async throws -> Int {
+        do {
+            return try await AudioSessionCoordinator.shared.activate()
+        } catch {
+            await AudioSessionCoordinator.shared.deactivate(ifCurrent: nil)
+            try? await Task.sleep(for: .milliseconds(250))
+            do {
+                return try await AudioSessionCoordinator.shared.activate()
+            } catch {
+                await AudioSessionCoordinator.shared.deactivate(ifCurrent: nil)
+                try? await Task.sleep(for: .milliseconds(500))
+                return try await AudioSessionCoordinator.shared.activate()
+            }
+        }
+    }
+
+    /// Releases and rebuilds the audio session. Backs the "Try again" action
+    /// shown when the microphone couldn't be started.
+    func recoverAudioSession() async {
+        warmSessionReleaseTask?.cancel()
+        audioSessionGeneration = nil
+        await Self.deactivateAudioSession(generation: nil)
+        audioSessionGeneration = try? await Self.activateAudioSessionWithRetry()
     }
 
     private nonisolated static func deactivateAudioSession(

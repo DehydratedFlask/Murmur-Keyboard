@@ -360,16 +360,22 @@ final class KeyboardViewModel: ObservableObject {
         isShifted || isCapsLocked
     }
 
-    /// Whether the recording panel replaces the key grid.
+    /// Whether the recording panel replaces the key grid. A failed start keeps
+    /// the panel up with a retry action rather than dropping back to an error
+    /// banner the user can't act on.
     var showsDictationPanel: Bool {
-        dictationPhase == .preparing
-            || dictationPhase == .recording
-            || dictationPhase == .processing
+        switch dictationPhase {
+        case .preparing, .recording, .processing, .failed:
+            return true
+        case .idle, .ready:
+            return false
+        }
     }
 
     // MARK: - Haptics
 
     func triggerLightHaptic() {
+        guard SharedDefaults.isKeyHapticsEnabled() else { return }
         UIDevice.current.playInputClick()
         guard hasFullAccess else { return }
         lightHaptic.impactOccurred()
@@ -377,6 +383,7 @@ final class KeyboardViewModel: ObservableObject {
     }
 
     func triggerMediumHaptic() {
+        guard SharedDefaults.isKeyHapticsEnabled() else { return }
         UIDevice.current.playInputClick()
         guard hasFullAccess else { return }
         mediumHaptic.impactOccurred()
@@ -750,6 +757,34 @@ final class KeyboardViewModel: ObservableObject {
     func consumeAbandonmentSuppression() -> Bool {
         defer { suppressesAbandonmentNotice = false }
         return suppressesAbandonmentNotice
+    }
+
+    /// Retries a dictation that failed to start (busy microphone, interrupted
+    /// session) without leaving the current app when that is possible.
+    func retryDictation() {
+        handoffError = nil
+        warmFallbackTask?.cancel()
+        if let activeSessionID {
+            SharedDefaults.requestDictationStop(sessionID: activeSessionID)
+        }
+        SharedDefaults.clearPendingText()
+        SharedDefaults.clearDictationSession()
+        activeSessionID = nil
+        dictationPhase = .idle
+        suppressesAbandonmentNotice = false
+        openMurmurForDictation()
+    }
+
+    /// Dismisses the failed-dictation panel without retrying.
+    func dismissDictationError() {
+        handoffError = nil
+        warmFallbackTask?.cancel()
+        SharedDefaults.clearPendingText()
+        SharedDefaults.clearDictationSession()
+        SharedDefaults.setDictationRequested(false)
+        activeSessionID = nil
+        dictationPhase = .idle
+        refreshSharedState()
     }
 
     private func textForInsertion(_ text: String) -> String {

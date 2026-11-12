@@ -35,11 +35,11 @@ struct KeyboardView: View {
 
     // MARK: - Native iOS Keyboard Layout Constants
 
-    private let keySpacing: CGFloat = 8
-    private var rowSpacing: CGFloat { verticalSizeClass == .compact ? 8 : 12 }
+    private let keySpacing: CGFloat = 6
+    private var rowSpacing: CGFloat { verticalSizeClass == .compact ? 7 : 10 }
     private var keyHeight: CGFloat { verticalSizeClass == .compact ? 36 : 46 }
     private let edgePadding: CGFloat = 6
-    private let middleRowInset: CGFloat = 22
+    private let middleRowInset: CGFloat = 20
     /// Height of Apple's predictive text / suggestion row
     private var predictionRowHeight: CGFloat {
         verticalSizeClass == .compact ? 30 : 36
@@ -254,22 +254,35 @@ struct KeyboardView: View {
                     systemImage: "xmark",
                     isPrimary: false,
                     enabled: true,
-                    label: "Cancel dictation",
-                    hint: "Stops this dictation without inserting any text."
+                    label: viewModel.dictationPhase == .failed ? "Close" : "Cancel dictation",
+                    hint: viewModel.dictationPhase == .failed
+                        ? "Dismisses this message."
+                        : "Stops this dictation without inserting any text."
                 ) {
-                    viewModel.cancelDictation()
+                    if viewModel.dictationPhase == .failed {
+                        viewModel.dismissDictationError()
+                    } else {
+                        viewModel.cancelDictation()
+                    }
                 }
 
                 Spacer(minLength: 0)
 
                 panelControl(
-                    systemImage: "checkmark",
+                    systemImage: viewModel.dictationPhase == .failed ? "arrow.clockwise" : "checkmark",
                     isPrimary: true,
-                    enabled: viewModel.dictationPhase == .recording,
-                    label: "Finish dictation",
-                    hint: "Murmur transcribes, cleans up and inserts the result."
+                    enabled: viewModel.dictationPhase == .recording
+                        || viewModel.dictationPhase == .failed,
+                    label: viewModel.dictationPhase == .failed ? "Try again" : "Finish dictation",
+                    hint: viewModel.dictationPhase == .failed
+                        ? "Releases the microphone and starts again."
+                        : "Murmur transcribes, cleans up and inserts the result."
                 ) {
-                    viewModel.finishDictation()
+                    if viewModel.dictationPhase == .failed {
+                        viewModel.retryDictation()
+                    } else {
+                        viewModel.finishDictation()
+                    }
                 }
             }
             .padding(.horizontal, 18)
@@ -325,7 +338,8 @@ struct KeyboardView: View {
         switch viewModel.dictationPhase {
         case .preparing: return "Starting…"
         case .processing: return "Transcribing…"
-        case .recording, .ready, .idle, .failed: return "Listening"
+        case .failed: return "Couldn't start"
+        case .recording, .ready, .idle: return "Listening"
         }
     }
 
@@ -346,8 +360,10 @@ struct KeyboardView: View {
                 "Turning speech into text",
                 comment: "Keyboard dictation panel detail while transcribing"
             )
-        case .idle, .ready, .failed:
+        case .idle, .ready:
             return nil
+        case .failed:
+            return viewModel.handoffError ?? "Tap the arrow to try again."
         }
     }
 
@@ -979,7 +995,9 @@ private struct AlternateInputKey<Label: View>: View {
     let action: (String) -> Void
     @ViewBuilder let label: () -> Label
 
+    @State private var isPressed = false
     @State private var showsAlternatives = false
+    @State private var longPressTask: Task<Void, Never>?
 
     var body: some View {
         ZStack(
@@ -988,36 +1006,37 @@ private struct AlternateInputKey<Label: View>: View {
                 vertical: .top
             )
         ) {
-            Button {
-                guard !showsAlternatives else { return }
-                action(displayText)
-            } label: {
-                label()
-            }
-            .buttonStyle(
-                IOSKeyboardPressStyle(
-                    isDarkMode: isDarkMode,
-                    popupText: displayText
-                )
-            )
-            .simultaneousGesture(
-                LongPressGesture(minimumDuration: 0.38)
-                    .onEnded { _ in
-                        guard !alternatives.isEmpty else { return }
-                        withAnimation(.snappy(duration: 0.14)) {
-                            showsAlternatives = true
+            label()
+                .brightness(isPressed ? (isDarkMode ? 0.12 : -0.07) : 0)
+                .contentShape(Rectangle())
+                // A zero-distance drag reports the touch immediately, so a key
+                // never swallows a press the way a Button inside a keyboard
+                // extension sometimes does.
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { _ in beginPress() }
+                        .onEnded { value in
+                            let moved = abs(value.translation.width) > 24
+                                || abs(value.translation.height) > 24
+                            endPress(commit: !moved)
                         }
+                )
+                .overlay(alignment: .top) {
+                    // No transition, no animation: the popup appears in the same
+                    // frame the finger lands, like the system keyboard.
+                    if isPressed, !showsAlternatives {
+                        KeyPopup(text: displayText, isDarkMode: isDarkMode)
+                            .offset(y: -42)
+                            .allowsHitTesting(false)
                     }
-            )
+                }
 
             if showsAlternatives {
                 HStack(spacing: 2) {
                     ForEach(alternatives, id: \.self) { alternative in
                         Button {
                             action(alternative)
-                            withAnimation(.easeOut(duration: 0.1)) {
-                                showsAlternatives = false
-                            }
+                            showsAlternatives = false
                         } label: {
                             Text(alternative)
                                 .font(.system(size: 20, weight: .regular))
@@ -1037,41 +1056,46 @@ private struct AlternateInputKey<Label: View>: View {
                 .shadow(color: .black.opacity(0.25), radius: 5, y: 2)
                 .fixedSize()
                 .offset(y: -42)
-                .transition(.scale(scale: 0.9, anchor: .bottom).combined(with: .opacity))
                 .zIndex(100)
             }
         }
         .zIndex(showsAlternatives ? 100 : 0)
     }
+
+    private func beginPress() {
+        guard !isPressed else { return }
+        isPressed = true
+        guard !alternatives.isEmpty else { return }
+        longPressTask?.cancel()
+        longPressTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(0.38))
+            guard !Task.isCancelled, isPressed else { return }
+            showsAlternatives = true
+        }
+    }
+
+    private func endPress(commit: Bool) {
+        longPressTask?.cancel()
+        longPressTask = nil
+        let wasShowingAlternatives = showsAlternatives
+        isPressed = false
+        guard !wasShowingAlternatives, commit else { return }
+        action(displayText)
+    }
 }
 
 private struct IOSKeyboardPressStyle: ButtonStyle {
     let isDarkMode: Bool
-    var popupText: String?
-
-    init(isDarkMode: Bool, popupText: String? = nil) {
-        self.isDarkMode = isDarkMode
-        self.popupText = popupText
-    }
 
     func makeBody(configuration: Configuration) -> some View {
-        // Native keys dim under the finger rather than shrinking; scaling was
-        // what made typing feel "clinky".
+        // Instant, unanimated dim. No scale and no implicit animation, so a
+        // press never waits on an animation before the next key responds.
         configuration.label
             .brightness(
                 configuration.isPressed
                     ? (isDarkMode ? 0.12 : -0.07)
                     : 0
             )
-            .overlay(alignment: .top) {
-                if configuration.isPressed, let popupText {
-                    KeyPopup(text: popupText, isDarkMode: isDarkMode)
-                        .offset(y: -42)
-                        .transition(.scale(scale: 0.82, anchor: .bottom).combined(with: .opacity))
-                        .allowsHitTesting(false)
-                }
-            }
-            .animation(.easeOut(duration: 0.08), value: configuration.isPressed)
     }
 }
 

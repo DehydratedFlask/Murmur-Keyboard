@@ -615,6 +615,12 @@ struct ContentView: View {
                             Text(error)
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
+                            Spacer(minLength: 8)
+                            Button("Try again") {
+                                retryAfterError()
+                            }
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(murmurAccent)
                         }
                         .padding(16)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1029,6 +1035,22 @@ struct ContentView: View {
     private func openKeyboardSettings() {
         if let url = URL(string: UIApplication.openSettingsURLString) {
             UIApplication.shared.open(url)
+        }
+    }
+
+    /// Rebuilds the audio session and retries whatever just failed, so a
+    /// "microphone not available" moment is never a dead end.
+    private func retryAfterError() {
+        let wasKeyboardDictation = isDictationFromKeyboard
+        clearErrorMessage()
+        Task {
+            await recorder.recoverAudioSession()
+            if wasKeyboardDictation {
+                dictationTask?.cancel()
+                dictationTask = handleDictationRequest()
+            } else {
+                handleRecordingTap()
+            }
         }
     }
 
@@ -1453,6 +1475,7 @@ struct SettingsView: View {
     @AppStorage("dictationSessionDuration") private var sessionDurationRaw = DictationSessionDuration.fiveMinutes.rawValue
     @AppStorage("historyRetentionDays") private var historyRetentionRaw = 14
     @AppStorage("aiCleanupEnabled") private var aiCleanupEnabled = true
+    @State private var keyHapticsEnabled = SharedDefaults.isKeyHapticsEnabled()
     @StateObject private var snippetStore = SnippetStore()
     @State private var selectedLanguageCodes: [String] = MurmurPreferences.selectedLanguageCodes
     @Environment(\.dismiss) private var dismiss
@@ -1618,6 +1641,23 @@ struct SettingsView: View {
                 Text("Formatting")
             } footer: {
                 Text(cleanupFooterText)
+            }
+
+            Section {
+                Toggle(isOn: $keyHapticsEnabled) {
+                    settingsRow(
+                        icon: "hand.tap.fill",
+                        color: .teal,
+                        title: "Key haptics"
+                    )
+                }
+                .onChange(of: keyHapticsEnabled) {
+                    SharedDefaults.setKeyHapticsEnabled(keyHapticsEnabled)
+                }
+            } header: {
+                Text("Keyboard")
+            } footer: {
+                Text("A small tap and click for every key press. Off by default, so typing is silent and still.")
             }
 
             Section {

@@ -121,6 +121,21 @@ enum SharedDefaults {
         return Date().timeIntervalSince1970 < expiry
     }
 
+    // MARK: - Key Haptics
+
+    private static let keyHapticsKey = "keyHapticsEnabled"
+
+    /// Off unless the user turns it on: typing should be silent and still by
+    /// default.
+    static func isKeyHapticsEnabled() -> Bool {
+        if suite.object(forKey: keyHapticsKey) == nil { return false }
+        return suite.bool(forKey: keyHapticsKey)
+    }
+
+    static func setKeyHapticsEnabled(_ enabled: Bool) {
+        suite.set(enabled, forKey: keyHapticsKey)
+    }
+
     // MARK: - Pending Text
 
     /// Stores transcribed text for the keyboard extension to pick up.
