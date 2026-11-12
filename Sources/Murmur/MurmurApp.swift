@@ -10,7 +10,6 @@ struct MurmurApp: App {
     init() {
         SharedDefaults.setModelReady(false, progressText: nil)
     }
-
     var body: some Scene {
         WindowGroup {
             ZStack {
@@ -64,6 +63,14 @@ final class AppState: ObservableObject {
         DarwinNotificationCenter.observe(.dictationStopRequested) { [weak self] in
             Task { @MainActor in
                 self?.shouldStopDictation = true
+            }
+        }
+        // Warm dictation: the keyboard can ask for a recording without opening
+        // the app, as long as this process is alive.
+        DarwinNotificationCenter.observe(.dictationRequested) { [weak self] in
+            Task { @MainActor in
+                SharedDefaults.markAppAlive()
+                self?.shouldStartDictation = true
             }
         }
     }

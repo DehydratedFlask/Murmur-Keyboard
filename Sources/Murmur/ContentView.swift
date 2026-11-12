@@ -1,4 +1,7 @@
 import SwiftUI
+#if canImport(FoundationModels)
+import FoundationModels
+#endif
 
 // MARK: - Accent colour
 
@@ -66,6 +69,7 @@ struct ContentView: View {
     @State private var showMicPermissionAlert = false
     @State private var transcriptionTask: Task<Void, Never>?
     @State private var transcriptionTaskID: UInt = 0
+    @State private var heartbeatTask: Task<Void, Never>?
     @State private var toastDismissTask: Task<Void, Never>?
     @State private var errorDismissTask: Task<Void, Never>?
     @State private var showCloudFallbackToast = false
@@ -168,6 +172,7 @@ struct ContentView: View {
         .task {
             SharedDefaults.setModelReady(false, progressText: nil)
             MurmurDictationLiveActivity.endAllImmediately()
+            startHeartbeat()
             SharedDefaults.setDictationSessionDurationMinutes(
                 max(1, MurmurPreferences.sessionDuration.minutes)
             )
@@ -1066,8 +1071,20 @@ struct ContentView: View {
         }
     }
 
-    private func stopAndTranscribe() {
-        MurmurDictationLiveActivity.end()
+    /// Keeps the app-group heartbeat fresh while this process is alive, so the
+    /// keyboard knows it can request a warm dictation without a redirect.
+    private func startHeartbeat() {
+        heartbeatTask?.cancel()
+        SharedDefaults.markAppAlive()
+        heartbeatTask = Task { @MainActor in
+            while !Task.isCancelled {
+                SharedDefaults.markAppAlive()
+                try? await Task.sleep(for: .seconds(1))
+            }
+        }
+    }
+
+    private func stopAndTranscribe() {        MurmurDictationLiveActivity.end()
         if isDictationFromKeyboard {
             SharedDefaults.setDictationPhase(
                 .processing,
@@ -1127,6 +1144,9 @@ struct ContentView: View {
                     isProcessing = false
                 }
                 recorder.cleanupRecording()
+                SharedDefaults.extendWarmSession(
+                    minutes: MurmurPreferences.sessionDuration.minutes
+                )
             }
             do {
                 var rawText: String
@@ -1145,7 +1165,10 @@ struct ContentView: View {
                     rawText = try await transcriptionService.transcribe(audioURL: audioURL)
                 }
 
-                let polished = await TranscriptCleanupService.process(rawText)
+                let polished = await TranscriptCleanupService.process(
+                    rawText,
+                    useFoundationModel: MurmurPreferences.aiCleanupEnabled
+                )
                 let cleanedText = SnippetStore.apply(snippetStore.snippets, to: polished)
 
                 if didFallback {
@@ -1354,6 +1377,7 @@ struct SettingsView: View {
     @AppStorage("dictationAutoDetectLanguage") private var autoDetectLanguage = true
     @AppStorage("dictationSessionDuration") private var sessionDurationRaw = DictationSessionDuration.fiveMinutes.rawValue
     @AppStorage("historyRetentionDays") private var historyRetentionRaw = 14
+    @AppStorage("aiCleanupEnabled") private var aiCleanupEnabled = true
     @StateObject private var snippetStore = SnippetStore()
     @State private var selectedLanguageCodes: [String] = MurmurPreferences.selectedLanguageCodes
     @Environment(\.dismiss) private var dismiss
@@ -1390,6 +1414,25 @@ struct SettingsView: View {
 
     private var settingsSessionDuration: DictationSessionDuration {
         DictationSessionDuration(rawValue: sessionDurationRaw) ?? .fiveMinutes
+    }
+
+    private var appleIntelligenceAvailable: Bool {
+        #if canImport(FoundationModels)
+        if #available(iOS 26.0, *) {
+            return SystemLanguageModel.default.availability == .available
+        }
+        #endif
+        return false
+    }
+
+    private var cleanupFooterText: String {
+        guard appleIntelligenceAvailable else {
+            return "Apple Intelligence isn't available on this device, so Murmur uses its built-in cleanup for punctuation and capitalization."
+        }
+        if aiCleanupEnabled {
+            return "Adds punctuation, capitalization and paragraph breaks on-device with Apple's model. It formats only — rewriting, summarizing and new facts are rejected."
+        }
+        return "Off: Murmur uses its built-in punctuation cleanup. Turn this on to have Apple's on-device model format your dictation as written prose."
     }
 
     private var historyRetention: HistoryRetention {
@@ -1486,6 +1529,20 @@ struct SettingsView: View {
                 }
             } header: {
                 Text("Dictation")
+            }
+
+            Section {
+                Toggle(isOn: $aiCleanupEnabled) {
+                    settingsRow(
+                        icon: "wand.and.stars",
+                        color: .pink,
+                        title: "Apple Intelligence cleanup"
+                    )
+                }
+            } header: {
+                Text("Formatting")
+            } footer: {
+                Text(cleanupFooterText)
             }
 
             Section {

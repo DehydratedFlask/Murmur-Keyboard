@@ -80,6 +80,47 @@ enum SharedDefaults {
         return stored > 0 ? stored : 5
     }
 
+    // MARK: - Warm Session
+
+    /// When the app may accept a dictation request without being brought to the
+    /// foreground: it is alive and the user's Session duration has not expired.
+    private static let warmSessionExpiryKey = "warmSessionExpiry"
+    private static let appHeartbeatKey = "appHeartbeat"
+
+    /// Called by the app roughly once a second while its process is running.
+    static func markAppAlive() {
+        suite.set(Date().timeIntervalSince1970, forKey: appHeartbeatKey)
+    }
+
+    static func isAppAlive(maxAge: TimeInterval = 4) -> Bool {
+        let beat = suite.double(forKey: appHeartbeatKey)
+        guard beat > 0 else { return false }
+        return Date().timeIntervalSince1970 - beat < maxAge
+    }
+
+    /// Opens a new warm window after a dictation finishes. A duration of 0
+    /// (Immediate) clears it, so the next dictation takes the app route.
+    static func extendWarmSession(minutes: Int) {
+        guard minutes > 0 else {
+            clearWarmSession()
+            return
+        }
+        suite.set(
+            Date().timeIntervalSince1970 + TimeInterval(minutes * 60),
+            forKey: warmSessionExpiryKey
+        )
+    }
+
+    static func clearWarmSession() {
+        suite.removeObject(forKey: warmSessionExpiryKey)
+    }
+
+    static func isWarmSessionActive() -> Bool {
+        let expiry = suite.double(forKey: warmSessionExpiryKey)
+        guard expiry > 0 else { return false }
+        return Date().timeIntervalSince1970 < expiry
+    }
+
     // MARK: - Pending Text
 
     /// Stores transcribed text for the keyboard extension to pick up.

@@ -559,7 +559,8 @@ enum TranscriptCleanupService {
 
     static func process(
         _ rawText: String,
-        dictionary: [PersonalDictionaryEntry] = PersonalDictionary.enabledEntries
+        dictionary: [PersonalDictionaryEntry] = PersonalDictionary.enabledEntries,
+        useFoundationModel: Bool = true
     ) async -> String {
         let sanitized = TextProcessor.prepareForSemanticCleanup(rawText)
         let prepared = applyDictionaryAliases(in: sanitized, dictionary: dictionary)
@@ -571,7 +572,8 @@ enum TranscriptCleanupService {
         }
 
         #if canImport(FoundationModels)
-        if #available(iOS 26.0, macOS 26.0, *),
+        if useFoundationModel,
+           #available(iOS 26.0, macOS 26.0, *),
            let refined = await FoundationModelTranscriptRefiner.refine(
                prepared,
                dictionary: dictionary
@@ -664,12 +666,12 @@ enum TranscriptCleanupService {
             return false
         }
 
-        let output = normalizedWords(in: candidate)
-        let input = normalizedWords(in: source)
+        let output = normalizedWords(in: expandContractions(candidate))
+        let input = normalizedWords(in: expandContractions(source))
         guard !output.isEmpty, !input.isEmpty else { return false }
 
         let lengthRatio = Double(output.count) / Double(input.count)
-        guard (0.20...1.10).contains(lengthRatio) else { return false }
+        guard (0.20...1.25).contains(lengthRatio) else { return false }
 
         let sourceWords = Set(input)
         let vocabularyWords = Set(
@@ -713,6 +715,32 @@ enum TranscriptCleanupService {
         text.lowercased()
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
             .filter { !$0.isEmpty }
+    }
+
+    /// Expands the contractions a formatter is allowed to fix, so "dont" and
+    /// "don't" (or "dont" and "do not") compare as the same words. Without this
+    /// every legitimate contraction fix looked like an invented word and the
+    /// model's output was thrown away.
+    private static func expandContractions(_ text: String) -> String {
+        var result = text.lowercased()
+        let replacements: [(String, String)] = [
+            ("can't", "can not"), ("won't", "will not"), ("shan't", "shall not"),
+            ("n't", " not"), ("'re", " are"), ("'ll", " will"),
+            ("'ve", " have"), ("'m", " am"), ("'d", " would"),
+            ("’re", " are"), ("’ll", " will"), ("’ve", " have"),
+            ("’m", " am"), ("’d", " would"),
+            ("let's", "let us"), ("it's", "it is"), ("that's", "that is"),
+            ("there's", "there is"), ("what's", "what is"), ("i'm", "i am"),
+            ("dont", "do not"), ("cant", "can not"), ("wont", "will not"),
+            ("isnt", "is not"), ("arent", "are not"), ("didnt", "did not"),
+            ("doesnt", "does not"), ("wouldnt", "would not"),
+            ("couldnt", "could not"), ("shouldnt", "should not"),
+            ("im", "i am"), ("ive", "i have"), ("ill", "i will"),
+        ]
+        for (from, to) in replacements {
+            result = result.replacingOccurrences(of: from, with: to)
+        }
+        return result
     }
 
     private static func containsPhrase(_ phrase: String, in text: String) -> Bool {

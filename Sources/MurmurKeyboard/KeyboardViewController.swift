@@ -63,9 +63,9 @@ class KeyboardViewController: UIInputViewController {
         hostingController = hosting
 
         // Explicit height so the system allocates space for the keyboard.
-        // 48 (toolbar) + 8/3 (key padding) + 4×42 (key rows) + 3×11 (row
-        // spacing) + 30 (globe footer) + 11 (card inset) ≈ 301
-        let desiredHeight = view.heightAnchor.constraint(equalToConstant: 304)
+        // 48 (toolbar) + 8/3 (key padding) + 4×46 (key rows) + 3×12 (row
+        // spacing) + 36 (globe footer) ≈ 315
+        let desiredHeight = view.heightAnchor.constraint(equalToConstant: 318)
         desiredHeight.priority = .init(999)
         desiredHeight.isActive = true
         heightConstraint = desiredHeight
@@ -108,7 +108,7 @@ class KeyboardViewController: UIInputViewController {
         with coordinator: any UIViewControllerTransitionCoordinator
     ) {
         super.viewWillTransition(to: size, with: coordinator)
-        heightConstraint?.constant = size.width > size.height ? 240 : 304
+        heightConstraint?.constant = size.width > size.height ? 262 : 318
     }
 
     override func textDidChange(_ textInput: UITextInput?) {
@@ -241,6 +241,7 @@ final class KeyboardViewModel: ObservableObject {
     var activeSessionID: String?
     private var handoffDismissTask: Task<Void, Never>?
     private var insertionConfirmationTask: Task<Void, Never>?
+    private var warmFallbackTask: Task<Void, Never>?
 
     /// Set when the user cancels from the keyboard, so the failure signal the
     /// container app sends back is not surfaced as an error banner.
@@ -682,6 +683,7 @@ final class KeyboardViewModel: ObservableObject {
         }
         triggerMediumHaptic()
         suppressesAbandonmentNotice = true
+        warmFallbackTask?.cancel()
 
         SharedDefaults.clearPendingText()
         SharedDefaults.clearDictationSession()
@@ -717,6 +719,12 @@ final class KeyboardViewModel: ObservableObject {
         return previousNeedsSeparation && insertedStartsInline ? " " + text : text
     }
 
+    /// Opens the app without starting a dictation (the toolbar's menu button).
+    func openMurmurApp() {
+        guard let url = URL(string: "murmur://") else { return }
+        openContainingApp(url)
+    }
+
     func openMurmurForDictation() {
         guard hasFullAccess else { return }
 
@@ -725,11 +733,35 @@ final class KeyboardViewModel: ObservableObject {
         activeSessionID = sessionID
         SharedDefaults.beginDictationSession(sessionID: sessionID)
         SharedDefaults.setDictationRequested(true)
-        // Signal the main app instantly via Darwin notification
-        DarwinNotificationCenter.post(.dictationRequested)
+
+        // Warm session: the app is still running and the user's Session
+        // duration has not expired, so it can start recording in the
+        // background without us leaving the current app.
+        if SharedDefaults.isWarmSessionActive(), SharedDefaults.isAppAlive() {
+            DarwinNotificationCenter.post(.dictationRequested)
+            scheduleWarmFallback(for: sessionID)
+            return
+        }
 
         guard let url = URL(string: "murmur://dictate") else { return }
+        openContainingApp(url)
+    }
 
+    /// If the background app doesn't start recording within a couple of
+    /// seconds, fall back to opening it — the old, always-works path.
+    private func scheduleWarmFallback(for sessionID: String) {
+        warmFallbackTask?.cancel()
+        warmFallbackTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(2.5))
+            guard !Task.isCancelled else { return }
+            guard activeSessionID == sessionID else { return }
+            guard SharedDefaults.dictationState().phase != .recording else { return }
+            guard let url = URL(string: "murmur://dictate") else { return }
+            openContainingApp(url)
+        }
+    }
+
+    private func openContainingApp(_ url: URL) {
         // Prefer the public extension API. Some older iOS releases reject
         // opening a containing app from a keyboard, so retain the responder
         // fallback only when the supported path explicitly reports failure.

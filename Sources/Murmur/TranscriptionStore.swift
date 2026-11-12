@@ -227,6 +227,19 @@ enum MurmurPreferences {
     static let selectedLanguagesKey = "dictationSelectedLanguages"
     static let sessionDurationKey = "dictationSessionDuration"
     static let historyRetentionKey = "historyRetentionDays"
+    static let aiCleanupKey = "aiCleanupEnabled"
+
+    /// Whether transcripts are polished by Apple's on-device model when it is
+    /// available, instead of the deterministic cleanup alone.
+    static var aiCleanupEnabled: Bool {
+        get {
+            if UserDefaults.standard.object(forKey: aiCleanupKey) == nil {
+                return true
+            }
+            return UserDefaults.standard.bool(forKey: aiCleanupKey)
+        }
+        set { UserDefaults.standard.set(newValue, forKey: aiCleanupKey) }
+    }
 
     static var autoDetectLanguage: Bool {
         get {

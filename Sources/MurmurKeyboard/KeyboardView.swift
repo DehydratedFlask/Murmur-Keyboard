@@ -35,11 +35,11 @@ struct KeyboardView: View {
 
     // MARK: - Native iOS Keyboard Layout Constants
 
-    private let keySpacing: CGFloat = 6
-    private var rowSpacing: CGFloat { verticalSizeClass == .compact ? 5 : 11 }
-    private var keyHeight: CGFloat { verticalSizeClass == .compact ? 32 : 42 }
-    private let edgePadding: CGFloat = 3
-    private let middleRowInset: CGFloat = 18
+    private let keySpacing: CGFloat = 8
+    private var rowSpacing: CGFloat { verticalSizeClass == .compact ? 8 : 12 }
+    private var keyHeight: CGFloat { verticalSizeClass == .compact ? 36 : 46 }
+    private let edgePadding: CGFloat = 6
+    private let middleRowInset: CGFloat = 22
     /// Height of Apple's predictive text / suggestion row
     private var predictionRowHeight: CGFloat {
         verticalSizeClass == .compact ? 30 : 36
@@ -80,10 +80,9 @@ struct KeyboardView: View {
         // a strip under the bottom key row.
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background { keyboardBackdrop }
-        // Rounded card inset from the edges, the way Amical's keyboard floats.
-        .padding(.horizontal, 5)
-        .padding(.top, 6)
-        .padding(.bottom, 5)
+        // One flat keyboard surface: no inset card, so there is no seam between
+        // the keys and the area around them.
+
         .animation(.snappy(duration: 0.18), value: viewModel.showNumbers)
         .animation(.snappy(duration: 0.18), value: viewModel.showSymbols)
         .animation(.snappy(duration: 0.24), value: viewModel.showsDictationPanel)
@@ -130,43 +129,49 @@ struct KeyboardView: View {
     /// keyboard.
     private var toolbarRow: some View {
         HStack(spacing: 8) {
-            HStack(spacing: 5) {
-                Image(systemName: toolbarStatusIcon)
-                    .font(.system(size: 11, weight: .semibold))
-                Text(toolbarStatusTitle)
-                    .font(.system(size: 12, weight: .medium))
-                    .lineLimit(1)
+            Button {
+                viewModel.openMurmurApp()
+            } label: {
+                Image(systemName: "line.3.horizontal")
+                    .font(.system(size: 19, weight: .semibold))
+                    .foregroundStyle(toolbarForeground)
+                    .frame(width: 40, height: 34)
+                    .contentShape(Rectangle())
             }
-            .foregroundStyle(toolbarStatusColor)
-            .accessibilityElement(children: .combine)
+            .buttonStyle(.plain)
+            .accessibilityLabel("Open Murmur")
+            .accessibilityHint("Opens the Murmur app.")
 
             Spacer(minLength: 8)
 
             dictationPill
         }
-        .padding(.horizontal, 14)
+        .padding(.horizontal, 16)
         .padding(.top, 8)
         .padding(.bottom, 4)
         .frame(height: predictionRowHeight + 12)
     }
 
-    /// The white pill from Amical's toolbar: microphone plus the Murmur mark.
-    /// It turns into an accent checkmark pill when a result is waiting.
+    private var toolbarForeground: Color {
+        viewModel.isDarkMode ? .white : .black
+    }
+
+    /// The white pill from Amical's toolbar, labelled Start and carrying
+    /// Murmur's waveform mark. It becomes an accent "Insert" pill when a result
+    /// is waiting.
     private var dictationPill: some View {
         Button {
             viewModel.handleMurmurButtonTap()
         } label: {
-            HStack(spacing: 7) {
-                Image(systemName: dictationButtonSymbol)
-                    .font(.system(size: 15, weight: .medium))
+            HStack(spacing: 6) {
+                Text(dictationPillTitle)
+                    .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(dictationButtonGlyph)
-                Image(systemName: "waveform")
+                Image(systemName: viewModel.hasPendingDictation ? "checkmark" : "waveform")
                     .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(
-                        viewModel.hasPendingDictation ? Color.white : murmurAccent
-                    )
+                    .foregroundStyle(viewModel.hasPendingDictation ? Color.white : murmurAccent)
             }
-            .padding(.horizontal, 14)
+            .padding(.horizontal, 16)
             .frame(height: dictationPillHeight)
             .background(Capsule(style: .continuous).fill(dictationPillFill))
             .overlay(
@@ -183,12 +188,13 @@ struct KeyboardView: View {
         .accessibilityHint(dictationButtonAccessibilityHint)
     }
 
-    private var dictationPillHeight: CGFloat {
-        verticalSizeClass == .compact ? 28 : 34
+    private var dictationPillTitle: String {
+        if viewModel.hasPendingDictation { return "Insert" }
+        return "Start"
     }
 
-    private var dictationButtonSymbol: String {
-        viewModel.hasPendingDictation ? "checkmark" : "mic.fill"
+    private var dictationPillHeight: CGFloat {
+        verticalSizeClass == .compact ? 30 : 36
     }
 
     private var dictationPillFill: Color {
@@ -516,16 +522,16 @@ struct KeyboardView: View {
         HStack(spacing: 0) {
             if viewModel.showGlobeKey {
                 InputModeSwitchButton(viewModel: viewModel)
-                    .frame(width: 44, height: 30)
+                    .frame(width: 44, height: 36)
                     .accessibilityLabel("Switch keyboard")
                     .accessibilityHint("Touch and hold to choose a keyboard.")
             }
 
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 16)
         .padding(.bottom, 2)
-        .frame(height: 30)
+        .frame(height: 36)
     }
 
     // MARK: - Key Views
@@ -541,7 +547,7 @@ struct KeyboardView: View {
             action: viewModel.insertAlternate
         ) {
             Text(displayLetter)
-                .font(.system(size: 22.5, weight: .light))
+                .font(.system(size: 24, weight: .light))
                 .frame(maxWidth: .infinity)
                 .frame(height: keyHeight)
                 .background { keySurface() }
@@ -567,7 +573,7 @@ struct KeyboardView: View {
             action: viewModel.insertCharacter
         ) {
             Text(character)
-                .font(.system(size: 20.5, weight: .regular))
+                .font(.system(size: 22, weight: .regular))
                 .frame(maxWidth: fixedWidth == nil ? .infinity : nil)
                 .frame(width: fixedWidth)
                 .frame(height: keyHeight)
@@ -586,7 +592,7 @@ struct KeyboardView: View {
             Image(systemName: viewModel.isCapsLocked ? "capslock.fill" :
                     (viewModel.isShifted ? "shift.fill" : "shift"))
                 .font(.system(size: 16, weight: .medium))
-                .frame(width: 42, height: keyHeight)
+                .frame(width: 46, height: keyHeight)
                 .background {
                     keySurface(isAction: !(viewModel.isShifted || viewModel.isCapsLocked))
                 }
@@ -600,7 +606,7 @@ struct KeyboardView: View {
         Image(systemName: "delete.left")
             .font(.system(size: 16, weight: .medium))
             .foregroundStyle(keyTextColor)
-            .frame(width: 42, height: keyHeight)
+            .frame(width: 46, height: keyHeight)
             .background { keySurface(isAction: true) }
             .onLongPressGesture(
                 minimumDuration: 0.4,
@@ -634,7 +640,7 @@ struct KeyboardView: View {
         } label: {
             Text(viewModel.showNumbers || viewModel.showSymbols ? "ABC" : "123")
                 .font(.system(size: 15, weight: .medium))
-                .frame(width: 50, height: keyHeight)
+                .frame(width: 56, height: keyHeight)
                 .background { keySurface(isAction: true) }
         }
         .buttonStyle(IOSKeyboardPressStyle(isDarkMode: viewModel.isDarkMode))
@@ -675,7 +681,7 @@ struct KeyboardView: View {
                         .font(.system(size: 15.5, weight: .medium))
                 }
             }
-            .frame(width: 84, height: keyHeight)
+            .frame(width: 92, height: keyHeight)
             .background { keySurface(isAction: true, isProminent: returnKeyIsProminent) }
         }
         .buttonStyle(IOSKeyboardPressStyle(isDarkMode: viewModel.isDarkMode))
@@ -786,7 +792,7 @@ struct KeyboardView: View {
         isAction: Bool = false,
         isProminent: Bool = false
     ) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
         shape
             .fill(
                 isProminent
@@ -796,18 +802,11 @@ struct KeyboardView: View {
             .shadow(color: keyShadow, radius: 0, y: 1)
     }
 
-    /// One rounded card behind the whole keyboard, the way Amical's keyboard
-    /// floats: tray, keys and chrome all come from the same tonal family.
+    /// One flat surface behind the whole keyboard. No rounded inset, no border
+    /// and no second tone: the tray, toolbar and globe footer share exactly the
+    /// same colour so there is no seam anywhere.
     private var keyboardBackdrop: some View {
-        RoundedRectangle(cornerRadius: 26, style: .continuous)
-            .fill(keyboardBackground)
-            .overlay(
-                RoundedRectangle(cornerRadius: 26, style: .continuous)
-                    .strokeBorder(
-                        Color.white.opacity(viewModel.isDarkMode ? 0.06 : 0.5),
-                        lineWidth: 0.5
-                    )
-            )
+        keyboardBackground
     }
 
     // MARK: - Palette
@@ -871,9 +870,9 @@ private struct SpaceInputButton: UIViewRepresentable {
 
     func makeUIView(context: Context) -> UIButton {
         let button = UIButton(type: .custom)
-        button.setTitle("space", for: .normal)
+        button.setTitle("Murmur", for: .normal)
         button.setTitleColor(viewModel.isDarkMode ? .white : .black, for: .normal)
-        button.titleLabel?.font = .systemFont(ofSize: 16)
+        button.titleLabel?.font = .systemFont(ofSize: 17)
         button.backgroundColor = .clear
         button.accessibilityLabel = "Space"
         button.accessibilityHint =
@@ -897,7 +896,7 @@ private struct SpaceInputButton: UIViewRepresentable {
     func updateUIView(_ button: UIButton, context: Context) {
         button.setTitleColor(viewModel.isDarkMode ? .white : .black, for: .normal)
         if !context.coordinator.isTracking {
-            button.setTitle("space", for: .normal)
+            button.setTitle("Murmur", for: .normal)
         }
     }
 
@@ -923,8 +922,7 @@ private struct SpaceInputButton: UIViewRepresentable {
                 isTracking = true
                 lastOffset = 0
                 trackingStartX = recognizer.location(in: button).x
-                button.setTitle("", for: .normal)
-            case .changed:
+                button.setTitle("", for: .normal)            case .changed:
                 let currentX = recognizer.location(in: button).x
                 let offset = Int((currentX - trackingStartX) / 12)
                 let delta = offset - lastOffset
@@ -936,7 +934,7 @@ private struct SpaceInputButton: UIViewRepresentable {
                 isTracking = false
                 lastOffset = 0
                 trackingStartX = 0
-                button.setTitle("space", for: .normal)
+                button.setTitle("Murmur", for: .normal)
             default:
                 break
             }
