@@ -855,7 +855,9 @@ private struct SpaceInputButton: UIViewRepresentable {
     func makeUIView(context: Context) -> UIButton {
         let button = UIButton(type: .custom)
         button.setTitle("Murmur", for: .normal)
-        button.setTitleColor(viewModel.isDarkMode ? .white : .black, for: .normal)
+        // Dynamic system label colour, so the space bar follows light/dark
+        // instead of being pinned to black.
+        button.setTitleColor(.label, for: .normal)
         button.titleLabel?.font = .systemFont(ofSize: 17)
         button.backgroundColor = .clear
         button.accessibilityLabel = "Space"
@@ -878,7 +880,7 @@ private struct SpaceInputButton: UIViewRepresentable {
     }
 
     func updateUIView(_ button: UIButton, context: Context) {
-        button.setTitleColor(viewModel.isDarkMode ? .white : .black, for: .normal)
+        button.setTitleColor(.label, for: .normal)
         if !context.coordinator.isTracking {
             button.setTitle("Murmur", for: .normal)
         }
@@ -1053,9 +1055,14 @@ private struct IOSKeyboardPressStyle: ButtonStyle {
     }
 
     func makeBody(configuration: Configuration) -> some View {
+        // Native keys dim under the finger rather than shrinking; scaling was
+        // what made typing feel "clinky".
         configuration.label
-            .scaleEffect(configuration.isPressed ? 1.035 : 1)
-            .brightness(configuration.isPressed ? 0.07 : 0)
+            .brightness(
+                configuration.isPressed
+                    ? (isDarkMode ? 0.12 : -0.07)
+                    : 0
+            )
             .overlay(alignment: .top) {
                 if configuration.isPressed, let popupText {
                     KeyPopup(text: popupText, isDarkMode: isDarkMode)
@@ -1064,7 +1071,7 @@ private struct IOSKeyboardPressStyle: ButtonStyle {
                         .allowsHitTesting(false)
                 }
             }
-            .animation(.snappy(duration: 0.09), value: configuration.isPressed)
+            .animation(.easeOut(duration: 0.08), value: configuration.isPressed)
     }
 }
 

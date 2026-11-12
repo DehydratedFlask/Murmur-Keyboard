@@ -73,6 +73,7 @@ struct ContentView: View {
     @State private var toastDismissTask: Task<Void, Never>?
     @State private var errorDismissTask: Task<Void, Never>?
     @State private var showCloudFallbackToast = false
+    @State private var searchText = ""
     @State private var cloudFallbackDismissTask: Task<Void, Never>?
 
     private var recordFABTrailingPadding: CGFloat {
@@ -200,6 +201,11 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
             // Immediate check on activation
             checkKeyboardEnabled()
+            // Freshly used app: reopen the warm window so the keyboard can ask
+            // for dictation without a redirect while this process is alive.
+            SharedDefaults.extendWarmSession(
+                minutes: MurmurPreferences.sessionDuration.minutes
+            )
             // Restore model-ready flag for the keyboard extension
             if transcriptionService.modelState == .loaded {
                 SharedDefaults.setModelReady(true, progressText: nil)
@@ -518,6 +524,69 @@ struct ContentView: View {
         cachedNumberFormatter.string(from: NSNumber(value: n)) ?? "\(n)"
     }
 
+    // MARK: - Search
+
+    private var searchQuery: String {
+        searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var filteredEntries: [TranscriptionEntry] {
+        guard !searchQuery.isEmpty else { return store.entries }
+        return store.entries.filter {
+            $0.text.localizedCaseInsensitiveContains(searchQuery)
+        }
+    }
+
+    private var searchBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(.secondary)
+
+            TextField("Search transcriptions", text: $searchText)
+                .font(.subheadline)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .submitLabel(.search)
+
+            if !searchText.isEmpty {
+                Button {
+                    searchText = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear search")
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(
+            murmurSurface(colorScheme),
+            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+        )
+        .padding(.horizontal, 20)
+    }
+
+    private var noMatchesState: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 28, weight: .light))
+                .foregroundStyle(.secondary.opacity(0.6))
+            Text("No matches")
+                .font(.headline)
+                .foregroundStyle(.primary)
+            Text("Nothing found for “\(searchQuery)”.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 24)
+        .padding(.vertical, 36)
+    }
+
     // MARK: - Transcription List
 
     private var transcriptionList: some View {
@@ -530,8 +599,14 @@ struct ContentView: View {
 
                 statsSection
 
+                if !store.entries.isEmpty {
+                    searchBar
+                }
+
                 if store.entries.isEmpty {
                     emptyState
+                } else if filteredEntries.isEmpty {
+                    noMatchesState
                 } else {
                     if let error = errorMessage {
                         HStack(spacing: 10) {
@@ -726,7 +801,7 @@ struct ContentView: View {
         var dict: [String: [TranscriptionEntry]] = [:]
         var order: [String] = []
 
-        for entry in store.entries {
+        for entry in filteredEntries {
             let entryDay = cal.startOfDay(for: entry.timestamp)
             let key: String
             if entryDay == today {

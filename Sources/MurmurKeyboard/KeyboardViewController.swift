@@ -404,6 +404,9 @@ final class KeyboardViewModel: ObservableObject {
 
     func insertCharacter(_ character: String) {
         triggerLightHaptic()
+        if [".", ",", "!", "?", ";", ":"].contains(character) {
+            autocorrectTrailingWord()
+        }
         textDocumentProxy?.insertText(character)
         lastSpaceTime = nil
     }
@@ -443,9 +446,55 @@ final class KeyboardViewModel: ObservableObject {
             return
         }
 
+        autocorrectTrailingWord()
         textDocumentProxy?.insertText(" ")
         lastSpaceTime = now
         autoCapitalize()
+    }
+
+    // MARK: - Autocorrection
+
+    private let spellChecker = UITextChecker()
+    private let spellLanguage = "en_US"
+
+    /// Replaces an obvious typo in the word before the caret with UIKit's best
+    /// guess. This uses the on-device spell checker, so no word list is bundled
+    /// and nothing leaves the device. Deliberately conservative: short words,
+    /// digits and capitalised words (usually names) are left alone.
+    private func autocorrectTrailingWord() {
+        guard let proxy = textDocumentProxy,
+              let context = proxy.documentContextBeforeInput,
+              !context.isEmpty
+        else { return }
+
+        let letters = context.reversed().prefix { $0.isLetter || $0 == "'" || $0 == "’" }
+        let word = String(letters.reversed())
+        guard word.count >= 3, word.count <= 24 else { return }
+        guard word.first?.isUppercase != true else { return }
+
+        let range = NSRange(location: 0, length: (word as NSString).length)
+        let misspelled = spellChecker.rangeOfMisspelledWord(
+            in: word,
+            range: range,
+            startingAt: 0,
+            wrap: true,
+            language: spellLanguage
+        )
+        guard misspelled.location != NSNotFound,
+              let guesses = spellChecker.guesses(
+                  forWordRange: range,
+                  in: word,
+                  language: spellLanguage
+              ),
+              let best = guesses.first,
+              !best.isEmpty,
+              best.caseInsensitiveCompare(word) != .orderedSame
+        else { return }
+
+        for _ in 0..<word.count {
+            proxy.deleteBackward()
+        }
+        proxy.insertText(best)
     }
 
     func insertReturn() {
@@ -735,10 +784,12 @@ final class KeyboardViewModel: ObservableObject {
         SharedDefaults.beginDictationSession(sessionID: sessionID)
         SharedDefaults.setDictationRequested(true)
 
-        // Warm session: the app is still running and the user's Session
-        // duration has not expired, so it can start recording in the
-        // background without us leaving the current app.
-        if SharedDefaults.isWarmSessionActive(), SharedDefaults.isAppAlive() {
+        // Warm session: the app is still running, so it can start recording in
+        // the background. While the model is still loading we still ask it and
+        // wait rather than dragging the user into the app.
+        let canAskInBackground = SharedDefaults.isAppAlive()
+            && (SharedDefaults.isWarmSessionActive() || !isModelWarm)
+        if canAskInBackground {
             DarwinNotificationCenter.post(.dictationRequested)
             scheduleWarmFallback(for: sessionID)
             return
@@ -752,8 +803,11 @@ final class KeyboardViewModel: ObservableObject {
     /// seconds, fall back to opening it — the old, always-works path.
     private func scheduleWarmFallback(for sessionID: String) {
         warmFallbackTask?.cancel()
+        // While the model is loading the app legitimately takes longer to
+        // begin recording, so give it much more room before opening it.
+        let delay: Double = isModelWarm ? 2.5 : 20
         warmFallbackTask = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(2.5))
+            try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled else { return }
             guard activeSessionID == sessionID else { return }
             guard SharedDefaults.dictationState().phase != .recording else { return }
