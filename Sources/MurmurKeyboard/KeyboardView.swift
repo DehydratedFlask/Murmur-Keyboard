@@ -174,13 +174,6 @@ struct KeyboardView: View {
             .padding(.horizontal, 16)
             .frame(height: dictationPillHeight)
             .background(Capsule(style: .continuous).fill(dictationPillFill))
-            .overlay(
-                Capsule(style: .continuous)
-                    .strokeBorder(
-                        Color.black.opacity(viewModel.isDarkMode ? 0 : 0.08),
-                        lineWidth: 0.5
-                    )
-            )
             .contentShape(Capsule(style: .continuous))
         }
         .buttonStyle(DictationButtonPressStyle())
@@ -792,6 +785,9 @@ struct KeyboardView: View {
         isAction: Bool = false,
         isProminent: Bool = false
     ) -> some View {
+        // Borderless, translucent caps sitting on the glass tray. No stroke and
+        // no drop shadow: the key reads as a tonal shift in the glass rather
+        // than a separate tile.
         let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
         shape
             .fill(
@@ -799,14 +795,18 @@ struct KeyboardView: View {
                     ? murmurAccent
                     : (isAction ? darkKeyBackground : lightKeyBackground)
             )
-            .shadow(color: keyShadow, radius: 0, y: 1)
     }
 
-    /// One flat surface behind the whole keyboard. No rounded inset, no border
-    /// and no second tone: the tray, toolbar and globe footer share exactly the
-    /// same colour so there is no seam anywhere.
+    /// The keyboard itself is glass: one translucent surface over whatever app
+    /// you're typing in, with no border or second tone anywhere.
     private var keyboardBackdrop: some View {
-        keyboardBackground
+        Rectangle()
+            .fill(.ultraThinMaterial)
+            .overlay(
+                viewModel.isDarkMode
+                    ? Color.black.opacity(0.42)
+                    : Color.white.opacity(0.28)
+            )
     }
 
     // MARK: - Palette
@@ -817,24 +817,22 @@ struct KeyboardView: View {
             : Color(red: 0.82, green: 0.83, blue: 0.85)
     }
 
+    /// Letter caps: a light film of glass, so the tray tone shows through.
     private var lightKeyBackground: Color {
         viewModel.isDarkMode
-            ? Color(red: 0.18, green: 0.18, blue: 0.19)
-            : .white
+            ? Color.white.opacity(0.11)
+            : Color.white.opacity(0.62)
     }
 
+    /// Modifier keys: the faintest possible tint difference, no outline.
     private var darkKeyBackground: Color {
         viewModel.isDarkMode
-            ? Color(red: 0.18, green: 0.18, blue: 0.19)
-            : Color(red: 0.75, green: 0.76, blue: 0.78)
+            ? Color.white.opacity(0.055)
+            : Color.black.opacity(0.05)
     }
 
     private var keyTextColor: Color {
         viewModel.isDarkMode ? .white : .black
-    }
-
-    private var keyShadow: Color {
-        viewModel.isDarkMode ? .clear : Color.black.opacity(0.12)
     }
 
     /// Shared Liquid Glass chrome for the microphone, panel controls and other
@@ -854,9 +852,7 @@ struct KeyboardView: View {
                     in: shape
                 )
         } else {
-            shape
-                .fill(tint)
-                .overlay(shape.stroke(Color.white.opacity(0.35), lineWidth: 0.5))
+            shape.fill(tint)
         }
     }
 }
