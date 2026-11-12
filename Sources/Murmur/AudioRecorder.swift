@@ -14,7 +14,7 @@ private actor AudioSessionCoordinator {
         try session.setCategory(
             .playAndRecord,
             mode: .default,
-            options: [.defaultToSpeaker, .allowBluetoothA2DP]
+            options: [.defaultToSpeaker, .allowBluetoothA2DP, .mixWithOthers]
         )
         try session.setActive(true, options: .notifyOthersOnDeactivation)
         return activeGeneration
@@ -79,6 +79,9 @@ final class AudioRecorder: ObservableObject {
     private nonisolated(unsafe) var vadHasDetectedSpeech = false
     private nonisolated(unsafe) var vadSilenceStart: Date?
     private nonisolated(unsafe) var vadRecordingStart: Date?
+
+    /// Releases the warm audio session once the Session-duration window ends.
+    private var warmSessionReleaseTask: Task<Void, Never>?
 
     // MARK: - Initialization
 
@@ -226,6 +229,7 @@ final class AudioRecorder: ObservableObject {
         vadSilenceStart = nil
         vadRecordingStart = Date()
         cleanupRecording()
+        warmSessionReleaseTask?.cancel()
 
         guard hasPermission else {
             throw RecordingError.noPermission
@@ -234,7 +238,15 @@ final class AudioRecorder: ObservableObject {
         do {
             audioSessionGeneration = try await Self.activateAudioSession()
         } catch {
-            throw RecordingError.engineStartFailed
+            // A session left in a bad state (for example after an interruption)
+            // refuses activation. Tear it down and try once more before giving
+            // up, so a second dictation doesn't fail with an audio error.
+            await Self.deactivateAudioSession(generation: nil)
+            do {
+                audioSessionGeneration = try await Self.activateAudioSession()
+            } catch {
+                throw RecordingError.engineStartFailed
+            }
         }
 
         let engine = AVAudioEngine()
@@ -386,11 +398,19 @@ final class AudioRecorder: ObservableObject {
         audioEngine = nil
         isRecording = false
 
-        // Avoid blocking the main actor while Core Audio tears the session down.
+        // Keep the audio session active for the user's Session duration so the
+        // next dictation can start from the background (the keyboard's warm
+        // path). "Immediate" releases it straight away.
         let sessionGeneration = audioSessionGeneration
-        audioSessionGeneration = nil
-        Task {
-            await Self.deactivateAudioSession(generation: sessionGeneration)
+        let warmMinutes = MurmurPreferences.sessionDuration.minutes
+        if warmMinutes > 0 {
+            scheduleWarmSessionRelease(after: warmMinutes)
+        } else {
+            audioSessionGeneration = nil
+            // Avoid blocking the main actor while Core Audio tears down.
+            Task {
+                await Self.deactivateAudioSession(generation: sessionGeneration)
+            }
         }
 
         let url = recordingURL
@@ -398,6 +418,17 @@ final class AudioRecorder: ObservableObject {
         // cleanupRecording() owns deletion + clearing so that
         // interruption / route-change callers can still remove the temp file.
         return url
+    }
+
+    private func scheduleWarmSessionRelease(after minutes: Int) {
+        warmSessionReleaseTask?.cancel()
+        warmSessionReleaseTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(Double(minutes) * 60))
+            guard !Task.isCancelled, let self else { return }
+            let generation = self.audioSessionGeneration
+            self.audioSessionGeneration = nil
+            await Self.deactivateAudioSession(generation: generation)
+        }
     }
 
     /// Cleans up any temporary recording files.
@@ -493,7 +524,7 @@ enum RecordingError: LocalizedError {
         case .formatError:
             return "Failed to configure audio format."
         case .engineStartFailed:
-            return "Failed to start the audio engine."
+            return "Couldn't start the microphone. Please try again."
         case .audioDeviceDisconnected:
             return "Audio device disconnected"
         case .sessionInterrupted:
