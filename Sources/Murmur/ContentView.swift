@@ -49,6 +49,7 @@ struct ContentView: View {
     @StateObject private var recorder = AudioRecorder()
     @StateObject private var transcriptionService = TranscriptionService()
     @StateObject private var store = TranscriptionStore()
+    @StateObject private var snippetStore = SnippetStore()
 
     // UI state
     @State private var isProcessing = false
@@ -88,35 +89,33 @@ struct ContentView: View {
                 (colorScheme == .dark ? Color(red: 0.07, green: 0.07, blue: 0.09) : Color(.systemGroupedBackground))
                     .ignoresSafeArea()
 
-                VStack(spacing: 0) {
-                    statusBar
-                    transcriptionList
-                }
-
                 if isDictationFromKeyboard {
-                    keyboardDictationOverlay
-                        .padding(.horizontal, 20)
-                        .padding(.top, 92)
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                }
+                    keyboardDictationScreen
+                        .transition(.opacity)
+                } else {
+                    VStack(spacing: 0) {
+                        statusBar
+                        transcriptionList
+                    }
 
-                if showCopiedToast {
-                    copiedToast
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                }
+                    if showCopiedToast {
+                        copiedToast
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
 
-                if showCloudFallbackToast {
-                    cloudFallbackToast
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                }
+                    if showCloudFallbackToast {
+                        cloudFallbackToast
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
 
-                VStack {
-                    Spacer()
-                    HStack {
+                    VStack {
                         Spacer()
-                        recordFAB
-                            .padding(.trailing, recordFABTrailingPadding)
-                            .padding(.bottom, recordFABBottomPadding)
+                        HStack {
+                            Spacer()
+                            recordFAB
+                                .padding(.trailing, recordFABTrailingPadding)
+                                .padding(.bottom, recordFABBottomPadding)
+                        }
                     }
                 }
             }
@@ -147,9 +146,10 @@ struct ContentView: View {
                 }
             }
             .toolbarBackground(.hidden, for: .navigationBar)
+            .toolbar(isDictationFromKeyboard ? .hidden : .visible, for: .navigationBar)
             .navigationBarTitleDisplayMode(.inline)
             .navigationDestination(isPresented: $showSettings) {
-                SettingsView(transcriptionService: transcriptionService)
+                SettingsView(transcriptionService: transcriptionService, store: store)
             }
         }
         .sheet(item: $shareItem) { item in
@@ -167,6 +167,10 @@ struct ContentView: View {
         }
         .task {
             SharedDefaults.setModelReady(false, progressText: nil)
+            MurmurDictationLiveActivity.endAllImmediately()
+            SharedDefaults.setDictationSessionDurationMinutes(
+                max(1, MurmurPreferences.sessionDuration.minutes)
+            )
             await recorder.requestPermission()
             await transcriptionService.loadModel()
             checkKeyboardEnabled()
@@ -232,6 +236,7 @@ struct ContentView: View {
         }
         .onChange(of: recorder.lastInterruptionError) {
             if let error = recorder.lastInterruptionError {
+                MurmurDictationLiveActivity.end()
                 if isDictationFromKeyboard {
                     signalKeyboardDictationAbandoned(reason: error)
                 }
@@ -267,7 +272,7 @@ struct ContentView: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
                 .padding(.horizontal, 20)
                 .padding(.bottom, 8)
 
@@ -293,7 +298,7 @@ struct ContentView: View {
                 }
                 .buttonStyle(.plain)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
                 .padding(.horizontal, 20)
                 .padding(.bottom, 8)
                 .accessibilityHint("Tap to retry model loading")
@@ -304,44 +309,168 @@ struct ContentView: View {
         }
     }
 
-    private var keyboardDictationOverlay: some View {
-        HStack(spacing: 12) {
-            ZStack {
-                Circle()
-                    .fill(murmurAccent.opacity(0.12))
-                    .frame(width: 40, height: 40)
+    // MARK: - Keyboard Dictation Screen
 
-                if isProcessing {
-                    ProgressView()
-                        .controlSize(.small)
-                } else {
-                    Image(systemName: recorder.isRecording ? "waveform.circle.fill" : "mic.circle.fill")
-                        .font(.system(size: 22, weight: .semibold))
-                        .foregroundStyle(murmurAccent)
+    /// Apple only lets the app — never the keyboard extension — use the
+    /// microphone, so Murmur has to be on screen while it records. This is the
+    /// single instruction that matters while that happens.
+    private var keyboardDictationScreen: some View {
+        GeometryReader { geo in
+            let illustrationHeight = min(300, max(150, geo.size.height * 0.34))
+
+            VStack(spacing: 0) {
+                HStack {
+                    Spacer()
+                    Button {
+                        cancelKeyboardDictationFromScreen()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.75))
+                            .frame(width: 40, height: 40)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Cancel dictation")
+                    .accessibilityHint("Stops recording and inserts nothing.")
                 }
-            }
+                .padding(.horizontal, 12)
+                .padding(.top, 4)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(recorder.isRecording ? "Listening for keyboard dictation" : (isProcessing ? "Transcribing keyboard dictation" : "Dictation ready"))
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.primary)
-                Text(keyboardCompletionMessage ?? (isProcessing
-                    ? "Murmur is turning your speech into text."
-                    : "Swipe back to your app now. Murmur keeps listening, then its keyboard button will paste the result."))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+                Spacer(minLength: 12)
 
-            Spacer(minLength: 0)
+                Text("Swipe back to your app")
+                    .font(.system(size: 40, weight: .bold, design: .serif))
+                    .foregroundStyle(.white)
+                    .multilineTextAlignment(.center)
+                    .minimumScaleFactor(0.6)
+                    .lineLimit(2)
+                    .padding(.horizontal, 24)
+
+                swipeBackIllustration(height: illustrationHeight)
+                    .padding(.horizontal, 24)
+                    .padding(.top, 24)
+
+                Text(swipeBackCaption)
+                    .font(.system(size: 16))
+                    .foregroundStyle(.white.opacity(0.55))
+                    .multilineTextAlignment(.center)
+                    .lineSpacing(3)
+                    .minimumScaleFactor(0.8)
+                    .padding(.horizontal, 36)
+                    .padding(.top, 20)
+
+                Spacer(minLength: 16)
+
+                swipeBackHint
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 28)
+            }
+            .frame(width: geo.size.width, height: geo.size.height)
         }
-        .padding(14)
-        .background(murmurSurfaceElevated(colorScheme), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(murmurBorder(colorScheme, opacity: 0.12), lineWidth: 1)
-        )
-        .shadow(color: murmurAccent.opacity(colorScheme == .dark ? 0.10 : 0.08), radius: 12, y: 6)
+        .background(Color.black.ignoresSafeArea())
+    }
+
+    /// The "device" drawing: a white bracket that reads as the app you are
+    /// heading back to, with the home bar and a finger glow.
+    private func swipeBackIllustration(height: CGFloat) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
+                .fill(Color(white: 0.17))
+
+            GeometryReader { geo in
+                let width = geo.size.width
+                let height = geo.size.height
+
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .stroke(Color.white, lineWidth: 7)
+                    .frame(width: width * 0.78, height: height * 1.1)
+                    .position(x: width / 2, y: height * 0.68)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+
+            Capsule()
+                .fill(Color.white.opacity(0.9))
+                .frame(width: 150, height: 4)
+                .offset(y: height * 0.22)
+
+            Circle()
+                .fill(
+                    RadialGradient(
+                        colors: [murmurAccent.opacity(0.55), .clear],
+                        center: .center,
+                        startRadius: 2,
+                        endRadius: 46
+                    )
+                )
+                .frame(width: 92, height: 92)
+                .offset(x: height * 0.33, y: height * 0.23)
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: height)
+        .clipped()
+        .accessibilityHidden(true)
+    }
+
+    private var swipeBackHint: some View {
+        VStack(spacing: 8) {
+            Text("Swipe right on the bar below")
+                .font(.system(size: 19, weight: .semibold))
+                .foregroundStyle(.black)
+
+            HStack(spacing: 10) {
+                Capsule()
+                    .fill(Color.black.opacity(0.22))
+                    .frame(width: 96, height: 5)
+                Image(systemName: "arrow.right")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.black)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 18)
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Swipe right on the bar at the bottom of the screen to go back to your app")
+    }
+
+    private var swipeBackCaption: String {
+        let minutes = MurmurPreferences.sessionDuration.minutes
+        if minutes <= 1 {
+            return "Apple only lets the Murmur app use the microphone. Swipe right on the bar below to head back — the mic releases the moment you finish."
+        }
+        let durationText = minutes >= 60 ? "hour" : "\(minutes) minutes"
+        return "Apple only lets the Murmur app use the microphone. Swipe right on the bar below to head back — the mic stays live for the next \(durationText)."
+    }
+
+    private func cancelKeyboardDictationFromScreen() {
+        MurmurDictationLiveActivity.end()
+        if recorder.isRecording {
+            _ = recorder.stopRecording()
+            recorder.cleanupRecording()
+        }
+        transcriptionTask?.cancel()
+        SharedDefaults.clearPendingText()
+        SharedDefaults.setDictationRequested(false)
+        SharedDefaults.clearDictationSession()
+        keyboardCompletionMessage = nil
+        keyboardDictationSessionID = nil
+        isDictationFromKeyboard = false
+    }
+
+    private func swipeBackStep(_ number: Int, _ text: String) -> some View {
+        HStack(alignment: .top, spacing: 9) {
+            Text("\(number)")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 18, height: 18)
+                .background(Circle().fill(murmurAccent))
+
+            Text(text)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     // MARK: - Stats Section
@@ -373,14 +502,8 @@ struct ContentView: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity)
-        .background(
-            LinearGradient(
-                colors: [murmurAccent.opacity(0.82), murmurAccentSecondary.opacity(0.78)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(murmurAccent)
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .padding(.horizontal, 20)
         .padding(.top, 2)
         .padding(.bottom, 4)
@@ -394,8 +517,8 @@ struct ContentView: View {
 
     private var transcriptionList: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 10, pinnedViews: []) {
-                if !keyboardIsEnabled || !fullAccessGranted {
+            LazyVStack(alignment: .leading, spacing: 16, pinnedViews: []) {
+                if !allAccessGranted {
                     keyboardSetupBanner
                         .padding(.top, 2)
                 }
@@ -415,9 +538,9 @@ struct ContentView: View {
                         }
                         .padding(16)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(murmurSurfaceElevated(colorScheme), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        .background(murmurSurfaceElevated(colorScheme), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
                         .overlay(
-                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            RoundedRectangle(cornerRadius: 20, style: .continuous)
                                 .stroke(Color.orange.opacity(colorScheme == .dark ? 0.28 : 0.18), lineWidth: 1)
                         )
                         .padding(.horizontal, 20)
@@ -534,9 +657,9 @@ struct ContentView: View {
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(murmurSurface(colorScheme), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .background(murmurSurface(colorScheme), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
                 .stroke(murmurBorder(colorScheme, opacity: 0.09), lineWidth: 1)
         )
         .shadow(color: murmurCardShadow.opacity(colorScheme == .dark ? 0.72 : 1), radius: 16, y: 8)
@@ -716,58 +839,97 @@ struct ContentView: View {
     // MARK: - Keyboard Setup Banner
 
     private var keyboardSetupBanner: some View {
-        let needsKeyboard = !keyboardIsEnabled
-
-        let icon = needsKeyboard ? "keyboard.badge.ellipsis" : "lock.shield"
-        let title = needsKeyboard ? "Enable Murmur Keyboard" : "Enable Full Access"
-        let subtitle = needsKeyboard
-            ? "Use Murmur for fast dictation in any app."
-            : "Full Access is required for dictation to work properly."
-        let buttonText = needsKeyboard ? "Set Up" : "Settings"
-
-        return HStack(spacing: 14) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(murmurAccent.opacity(0.12))
-                    .frame(width: 40, height: 40)
-                Image(systemName: icon)
-                    .font(.system(size: 17, weight: .semibold))
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 10) {
+                Image(systemName: "lock.shield.fill")
+                    .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(murmurAccent)
-            }
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.subheadline.weight(.semibold))
+                Text("Allow Murmur to Access")
+                    .font(.headline)
                     .foregroundStyle(.primary)
-                Text(subtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
             }
 
-            Spacer(minLength: 8)
+            VStack(spacing: 0) {
+                accessRow(icon: "mic.fill", tint: .orange, title: "Microphone", isGranted: recorder.hasPermission)
+                Divider().opacity(0.4).padding(.leading, 52)
+                accessRow(icon: "keyboard", tint: .blue, title: "Murmur Keyboard", isGranted: keyboardIsEnabled)
+                Divider().opacity(0.4).padding(.leading, 52)
+                accessRow(icon: "lock.shield", tint: murmurAccent, title: "Full Access", isGranted: fullAccessGranted)
+            }
+            .background(
+                murmurSurface(colorScheme).opacity(0.7),
+                in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+            )
+
+            VStack(alignment: .leading, spacing: 8) {
+                swipeBackStep(1, "Open Settings → General → Keyboard → Keyboards")
+                swipeBackStep(2, "Turn on Murmur, then turn on Allow Full Access")
+                swipeBackStep(3, "Tap Allow on the popup")
+                swipeBackStep(4, "Come back to Murmur")
+            }
 
             Button {
                 openKeyboardSettings()
             } label: {
-                Text(buttonText)
-                    .font(.caption.weight(.semibold))
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 7)
-                    .background(murmurAccent, in: Capsule())
+                Text("Open Settings")
+                    .font(.subheadline.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 11)
+                    .background(murmurAccent, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                     .foregroundStyle(.white)
             }
             .buttonStyle(.plain)
         }
-        .padding(12)
+        .padding(16)
         .background(
             murmurSurfaceElevated(colorScheme),
-            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+            in: RoundedRectangle(cornerRadius: 20, style: .continuous)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
                 .stroke(murmurBorder(colorScheme, opacity: 0.12), lineWidth: 1)
         )
         .padding(.horizontal, 20)
+        .accessibilityElement(children: .contain)
+    }
+
+    private var allAccessGranted: Bool {
+        recorder.hasPermission && keyboardIsEnabled && fullAccessGranted
+    }
+
+    private func accessRow(
+        icon: String,
+        tint: Color,
+        title: String,
+        isGranted: Bool
+    ) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 28, height: 28)
+                .background(tint.opacity(0.14), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+            Text(title)
+                .font(.subheadline)
+                .foregroundStyle(.primary)
+
+            Spacer(minLength: 8)
+
+            if isGranted {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            } else {
+                Text("Set up")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.orange)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(title): \(isGranted ? "allowed" : "not set up")")
     }
 
     // MARK: - Helpers
@@ -876,13 +1038,14 @@ struct ContentView: View {
         clearErrorMessage()
         do {
             try await recorder.startRecording()
+            MurmurDictationLiveActivity.start()
             if isDictationFromKeyboard, let keyboardDictationSessionID {
                 SharedDefaults.setDictationPhase(
                     .recording,
                     sessionID: keyboardDictationSessionID
                 )
                 keyboardCompletionMessage =
-                    "Recording started. Use iOS’s Back control to return to your app, then tap Stop on the Murmur keyboard."
+                    "Recording started. Swipe back to your app, then tap the checkmark on Murmur’s keyboard."
 
                 // The request flag is persistent, so this also catches a stop
                 // signal delivered while the app was finishing startup.
@@ -904,6 +1067,7 @@ struct ContentView: View {
     }
 
     private func stopAndTranscribe() {
+        MurmurDictationLiveActivity.end()
         if isDictationFromKeyboard {
             SharedDefaults.setDictationPhase(
                 .processing,
@@ -981,7 +1145,8 @@ struct ContentView: View {
                     rawText = try await transcriptionService.transcribe(audioURL: audioURL)
                 }
 
-                let cleanedText = await TranscriptCleanupService.process(rawText)
+                let polished = await TranscriptCleanupService.process(rawText)
+                let cleanedText = SnippetStore.apply(snippetStore.snippets, to: polished)
 
                 if didFallback {
                     showCloudFallbackToast = true
@@ -1060,6 +1225,7 @@ struct ContentView: View {
     }
 
     private func signalKeyboardDictationAbandoned(reason: String) {
+        MurmurDictationLiveActivity.end()
         SharedDefaults.abandonDictationSession(reason: reason)
         SharedDefaults.setDictationRequested(false)
         keyboardCompletionMessage = nil
@@ -1181,9 +1347,15 @@ enum AppearanceMode: String, CaseIterable, Identifiable {
 
 struct SettingsView: View {
     @ObservedObject var transcriptionService: TranscriptionService
+    @ObservedObject var store: TranscriptionStore
     @AppStorage("appearanceMode") private var appearanceMode: String = AppearanceMode.auto.rawValue
     @AppStorage("cloudDictationEnabled") private var cloudDictationEnabled = false
     @AppStorage("cloudProvider") private var cloudProviderRaw: String = CloudProvider.groq.rawValue
+    @AppStorage("dictationAutoDetectLanguage") private var autoDetectLanguage = true
+    @AppStorage("dictationSessionDuration") private var sessionDurationRaw = DictationSessionDuration.fiveMinutes.rawValue
+    @AppStorage("historyRetentionDays") private var historyRetentionRaw = 14
+    @StateObject private var snippetStore = SnippetStore()
+    @State private var selectedLanguageCodes: [String] = MurmurPreferences.selectedLanguageCodes
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
 
@@ -1201,49 +1373,184 @@ struct SettingsView: View {
         CloudProvider(rawValue: cloudProviderRaw) ?? .groq
     }
 
+    private var footerTextForEngine: String {
+        switch transcriptionService.selectedEngine {
+        case .whisper:
+            return "Tiny is fastest with slightly lower accuracy. Base is more accurate but uses more memory. This model is also used as fallback when cloud dictation is unavailable."
+        case .parakeet:
+            return "Runs on the Neural Engine and downloads about 600 MB on first use. Parakeet has no prompt support, so personal-dictionary spellings aren't used as recognition hints with this engine."
+        }
+    }
+
     private var appVersion: String {
         Bundle.main.object(
             forInfoDictionaryKey: "CFBundleShortVersionString"
         ) as? String ?? "—"
     }
 
-    private var selectedMode: Binding<AppearanceMode> {
-        Binding(
-            get: { AppearanceMode(rawValue: appearanceMode) ?? .auto },
-            set: { appearanceMode = $0.rawValue }
-        )
+    private var settingsSessionDuration: DictationSessionDuration {
+        DictationSessionDuration(rawValue: sessionDurationRaw) ?? .fiveMinutes
+    }
+
+    private var historyRetention: HistoryRetention {
+        HistoryRetention(rawValue: historyRetentionRaw) ?? .fourteenDays
+    }
+
+    private var appearanceModeDisplay: String {
+        (AppearanceMode(rawValue: appearanceMode) ?? .auto).displayName
+    }
+
+    private var snippetCountText: String {
+        let count = snippetStore.snippets.count
+        return count == 0 ? "None" : "\(count)"
+    }
+
+    private var languageSummary: String {
+        if autoDetectLanguage { return "Auto detect" }
+        let names = selectedLanguageCodes.compactMap { DictationLanguage.named($0)?.name }
+        if names.isEmpty { return "English" }
+        return names.count == 1 ? names[0] : "\(names[0]) +\(names.count - 1)"
+    }
+
+    private func settingsRow(
+        icon: String,
+        color: Color,
+        title: String,
+        value: String? = nil
+    ) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 29, height: 29)
+                .background(color.gradient, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+
+            Text(title)
+                .foregroundStyle(.primary)
+
+            Spacer(minLength: 8)
+
+            if let value {
+                Text(value)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
     }
 
     var body: some View {
         List {
             Section {
-                Picker(selection: selectedMode) {
-                    ForEach(AppearanceMode.allCases) { mode in
-                        Text(mode.displayName).tag(mode)
-                    }
+                NavigationLink {
+                    PersonalDictionaryView()
                 } label: {
-                    EmptyView()
+                    settingsRow(
+                        icon: "book.closed.fill",
+                        color: .green,
+                        title: "Vocabulary",
+                        value: "\(PersonalDictionary.enabledEntries.count)"
+                    )
                 }
-                .pickerStyle(.inline)
+
+                NavigationLink {
+                    SnippetsView(store: snippetStore)
+                } label: {
+                    settingsRow(
+                        icon: "textformat",
+                        color: .indigo,
+                        title: "Snippets",
+                        value: snippetCountText
+                    )
+                }
+
+                NavigationLink {
+                    LanguageView()
+                } label: {
+                    settingsRow(
+                        icon: "globe",
+                        color: .orange,
+                        title: "Language",
+                        value: languageSummary
+                    )
+                }
+
+                NavigationLink {
+                    SessionDurationView()
+                } label: {
+                    settingsRow(
+                        icon: "clock.fill",
+                        color: .blue,
+                        title: "Session duration",
+                        value: settingsSessionDuration.title
+                    )
+                }
             } header: {
-                Text("Appearance")
-            } footer: {
-                Text("Choose how Murmur looks. Auto follows your system setting.")
+                Text("Dictation")
             }
 
             Section {
-                Picker(selection: $transcriptionService.selectedModel) {
-                    ForEach(WhisperModel.allCases) { model in
-                        Text(model.displayName).tag(model)
+                NavigationLink {
+                    ThemeView()
+                } label: {
+                    settingsRow(
+                        icon: "paintpalette.fill",
+                        color: .purple,
+                        title: "Theme",
+                        value: appearanceModeDisplay
+                    )
+                }
+            } header: {
+                Text("Appearance")
+            }
+
+            Section {
+                NavigationLink {
+                    HistoryRetentionView(store: store)
+                } label: {
+                    settingsRow(
+                        icon: "clock.arrow.circlepath",
+                        color: .blue,
+                        title: "Dictation history",
+                        value: historyRetention.title
+                    )
+                }
+            } header: {
+                Text("History")
+            }
+
+            Section {
+                Picker(selection: Binding(
+                    get: { transcriptionService.selectedEngine },
+                    set: { transcriptionService.setEngine($0) }
+                )) {
+                    ForEach(TranscriptionEngine.allCases) { engine in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(engine.displayName)
+                            Text(engine.detail)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .tag(engine)
                     }
                 } label: {
                     EmptyView()
                 }
                 .pickerStyle(.inline)
+
+                if transcriptionService.selectedEngine == .whisper {
+                    Picker(selection: $transcriptionService.selectedModel) {
+                        ForEach(WhisperModel.allCases) { model in
+                            Text(model.displayName).tag(model)
+                        }
+                    } label: {
+                        EmptyView()
+                    }
+                    .pickerStyle(.inline)
+                }
             } header: {
-                Text("On-Device Model")
+                Text("Transcription Engine")
             } footer: {
-                Text("Tiny is fastest with slightly lower accuracy. Base is more accurate but uses more memory. This model is also used as fallback when cloud dictation is unavailable.")
+                Text(footerTextForEngine)
             }
 
             Section {
@@ -1254,28 +1561,6 @@ struct SettingsView: View {
                     }
                 }
                 .disabled(transcriptionService.modelState == .loading || transcriptionService.isTranscribing)
-            }
-
-            Section {
-                NavigationLink {
-                    PersonalDictionaryView()
-                } label: {
-                    Label {
-                        HStack {
-                            Text("Personal Dictionary")
-                            Spacer()
-                            Text("\(PersonalDictionary.enabledEntries.count)")
-                                .foregroundStyle(.secondary)
-                        }
-                    } icon: {
-                        Image(systemName: "text.book.closed")
-                            .foregroundStyle(murmurAccent)
-                    }
-                }
-            } header: {
-                Text("Recognition")
-            } footer: {
-                Text("Teach Murmur names, technical terms, and preferred spellings. Entries stay on this device; enabled spellings may be sent as recognition hints when cloud dictation is on.")
             }
 
             // MARK: - Cloud Dictation Section
@@ -1460,6 +1745,7 @@ struct SettingsView: View {
         .onAppear {
             loadStateForCurrentProvider()
             refreshStatus()
+            selectedLanguageCodes = MurmurPreferences.selectedLanguageCodes
         }
         .onDisappear {
             testTask?.cancel()
@@ -1867,4 +2153,325 @@ struct ShareSheet: UIViewControllerRepresentable {
 #Preview {
     ContentView()
         .environmentObject(AppState())
+}
+
+
+
+// MARK: - Theme
+
+private struct ThemeView: View {
+    @AppStorage("appearanceMode") private var appearanceMode: String = AppearanceMode.auto.rawValue
+
+    private var current: AppearanceMode {
+        AppearanceMode(rawValue: appearanceMode) ?? .auto
+    }
+
+    var body: some View {
+        List {
+            Section {
+                ForEach(AppearanceMode.allCases) { mode in
+                    Button {
+                        appearanceMode = mode.rawValue
+                    } label: {
+                        HStack {
+                            Text(mode.displayName)
+                                .foregroundStyle(.primary)
+                            Spacer()
+                            if current == mode {
+                                Image(systemName: "checkmark")
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(murmurAccent)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            } footer: {
+                Text("Auto follows your system setting. Murmur's keyboard matches the app you're typing in.")
+            }
+        }
+        .navigationTitle("Theme")
+        .navigationBarTitleDisplayMode(.inline)
+        .tint(murmurAccent)
+    }
+}
+
+// MARK: - Snippets
+
+private struct SnippetsView: View {
+    @ObservedObject var store: SnippetStore
+    @State private var searchText = ""
+    @State private var trigger = ""
+    @State private var expansion = ""
+
+    private var filtered: [Snippet] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return store.snippets }
+        return store.snippets.filter {
+            $0.trigger.localizedCaseInsensitiveContains(query)
+                || $0.expansion.localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    private var canAdd: Bool {
+        !trigger.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !expansion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var body: some View {
+        List {
+            Section {
+                Text("Snippets expand a short trigger into longer text while you dictate.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                TextField("Trigger (e.g. omw)…", text: $trigger)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                TextField("Expansion text…", text: $expansion)
+                Button {
+                    store.add(trigger: trigger, expansion: expansion)
+                    trigger = ""
+                    expansion = ""
+                } label: {
+                    Label("Add snippet", systemImage: "plus.circle.fill")
+                }
+                .disabled(!canAdd)
+            }
+
+            Section {
+                if filtered.isEmpty {
+                    VStack(spacing: 8) {
+                        Text("Aa")
+                            .font(.system(size: 44, weight: .light))
+                            .foregroundStyle(.secondary.opacity(0.5))
+                        Text(searchText.isEmpty ? "No snippets yet" : "No matches")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 24)
+                } else {
+                    ForEach(filtered) { snippet in
+                        HStack(alignment: .firstTextBaseline, spacing: 10) {
+                            Text(snippet.trigger)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(murmurAccent)
+                            Text(snippet.expansion)
+                                .font(.subheadline)
+                                .foregroundStyle(.primary)
+                                .lineLimit(2)
+                        }
+                    }
+                    .onDelete { offsets in
+                        let targets = filtered
+                        for index in offsets where targets.indices.contains(index) {
+                            store.delete(targets[index])
+                        }
+                    }
+                }
+            } header: {
+                Text("\(filtered.count) Snippet\(filtered.count == 1 ? "" : "s")")
+            }
+        }
+        .searchable(text: $searchText, prompt: "Search snippets")
+        .navigationTitle("Snippets")
+        .navigationBarTitleDisplayMode(.inline)
+        .tint(murmurAccent)
+    }
+}
+
+// MARK: - Language
+
+private struct LanguageView: View {
+    @AppStorage("dictationAutoDetectLanguage") private var autoDetect = true
+    @State private var selected: [String] = MurmurPreferences.selectedLanguageCodes
+    @State private var search = ""
+
+    private var filtered: [DictationLanguage] {
+        let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return DictationLanguage.all }
+        return DictationLanguage.all.filter { $0.name.localizedCaseInsensitiveContains(query) }
+    }
+
+    var body: some View {
+        List {
+            Section {
+                Toggle("Auto-detect language", isOn: $autoDetect)
+            } footer: {
+                Text("Selecting specific languages increases transcription accuracy. Parakeet covers 25 European languages; Whisper covers the full list.")
+            }
+
+            Section {
+                ForEach(filtered) { language in
+                    Button {
+                        toggle(language)
+                    } label: {
+                        HStack(spacing: 10) {
+                            Text(language.flag)
+                            Text(language.name)
+                                .foregroundStyle(.primary)
+                            Spacer()
+                            if selected.contains(language.code) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundStyle(murmurAccent)
+                            } else {
+                                Image(systemName: "plus.circle")
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            } header: {
+                Text("All Languages")
+            } footer: {
+                if autoDetect {
+                    Text("Murmur picks the language automatically. Turn auto-detect off to prefer the languages selected here.")
+                }
+            }
+        }
+        .searchable(text: $search, prompt: "Search languages")
+        .navigationTitle("Language")
+        .navigationBarTitleDisplayMode(.inline)
+        .tint(murmurAccent)
+        .onChange(of: selected) {
+            MurmurPreferences.selectedLanguageCodes = selected
+        }
+    }
+
+    private func toggle(_ language: DictationLanguage) {
+        if let index = selected.firstIndex(of: language.code) {
+            // Keep at least one language so the pipeline always has a hint.
+            guard selected.count > 1 else { return }
+            selected.remove(at: index)
+        } else {
+            selected.append(language.code)
+        }
+    }
+}
+
+// MARK: - Session Duration
+
+private struct SessionDurationView: View {
+    @AppStorage("dictationSessionDuration") private var durationRaw = DictationSessionDuration.fiveMinutes.rawValue
+
+    private var selected: DictationSessionDuration {
+        DictationSessionDuration(rawValue: durationRaw) ?? .fiveMinutes
+    }
+
+    var body: some View {
+        List {
+            Section {
+                ForEach(DictationSessionDuration.allCases) { option in
+                    Button {
+                        durationRaw = option.rawValue
+                    } label: {
+                        HStack(alignment: .top, spacing: 12) {
+                            Image(systemName: option.symbolName)
+                                .font(.system(size: 15, weight: .medium))
+                                .foregroundStyle(selected == option ? murmurAccent : .secondary)
+                                .frame(width: 22)
+
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(option.title)
+                                    .foregroundStyle(.primary)
+                                Text(option.detail)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+
+                            Spacer(minLength: 8)
+
+                            if selected == option {
+                                Image(systemName: "checkmark")
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(murmurAccent)
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                    .buttonStyle(.plain)
+                }
+            } footer: {
+                Text("How long dictation stays ready to resume after you finish speaking. A longer duration resumes instantly; a shorter one releases the microphone sooner.")
+            }
+        }
+        .navigationTitle("Session duration")
+        .navigationBarTitleDisplayMode(.inline)
+        .tint(murmurAccent)
+        .onChange(of: durationRaw) {
+            SharedDefaults.setDictationSessionDurationMinutes(max(1, selected.minutes))
+        }
+        .onAppear {
+            SharedDefaults.setDictationSessionDurationMinutes(max(1, selected.minutes))
+        }
+    }
+}
+
+// MARK: - History Retention
+
+private struct HistoryRetentionView: View {
+    @ObservedObject var store: TranscriptionStore
+    @AppStorage("historyRetentionDays") private var retentionRaw = 14
+    @State private var showDeleteConfirmation = false
+
+    private var selected: HistoryRetention {
+        HistoryRetention(rawValue: retentionRaw) ?? .fourteenDays
+    }
+
+    var body: some View {
+        List {
+            Section {
+                ForEach(HistoryRetention.allCases) { option in
+                    Button {
+                        retentionRaw = option.rawValue
+                    } label: {
+                        HStack {
+                            Text(option.title)
+                                .foregroundStyle(.primary)
+                            Spacer()
+                            if selected == option {
+                                Image(systemName: "checkmark")
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(murmurAccent)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            } header: {
+                Text("Keep history for")
+            } footer: {
+                Text("Older transcriptions are automatically deleted after this window. Lifetime word totals are unaffected.")
+            }
+
+            Section {
+                Button(role: .destructive) {
+                    showDeleteConfirmation = true
+                } label: {
+                    Text("Delete all history")
+                        .foregroundStyle(.red)
+                }
+            }
+        }
+        .navigationTitle("Dictation history")
+        .navigationBarTitleDisplayMode(.inline)
+        .tint(murmurAccent)
+        .onChange(of: retentionRaw) {
+            MurmurPreferences.historyRetention = selected
+            store.applyRetentionPolicy()
+        }
+        .alert("Delete all history?", isPresented: $showDeleteConfirmation) {
+            Button("Delete", role: .destructive) {
+                store.deleteAll()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes every transcription and resets your lifetime word total.")
+        }
+    }
 }

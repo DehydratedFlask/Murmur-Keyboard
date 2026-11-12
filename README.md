@@ -1,6 +1,6 @@
 <div align="center">
 
-# Murmur 3
+# Murmur 3.1
 
 **The voice keyboard that speaks *your* language.**
 On-device Whisper transcription, polished into the text you meant to write — never a verbatim dump of pauses and stutters.
@@ -21,11 +21,15 @@ On-device Whisper transcription, polished into the text you meant to write — n
 Dictation apps give you a transcript. Murmur gives you a **message**:
 
 - Transcribes speech on-device with [WhisperKit](https://github.com/argmaxinc/WhisperKit)
+  or [NVIDIA Parakeet](https://github.com/FluidInference/FluidAudio) on the Neural Engine
 - Restores sentence boundaries, capitalization, commas, periods, question marks, contractions, paragraph breaks
 - Removes filled pauses, repeated words, abandoned fragments, self-corrections, and ASR artifacts like `[Pause]` and `[BLANK_AUDIO]`
 - Preserves meaning-bearing words, names, numbers, negation — and your voice
 - Personal dictionary with preferred spellings, "sounds like" aliases, per-entry toggles
+- Snippets: expand a short trigger ("omw") into longer text while you dictate
+- Language selection or auto-detect, session duration, and a configurable history window
 - Custom iOS keyboard with microphone handoff and automatic result insertion
+- Live Activity in the Dynamic Island: a waveform icon and a running timer while you dictate
 - iOS 17+ with Liquid Glass adoption on newer systems
 
 No predictive text, no autocorrect, no swipe. Just a familiar keyboard with
@@ -59,8 +63,10 @@ handoff:
 1. Install Murmur and open it once so the Whisper model downloads.
 2. In iOS Settings, enable the keyboard + Full Access (for app↔extension exchange).
 3. Tap Murmur's microphone in any text field.
-4. Speak in Murmur, stop recording, return to your app.
-5. The polished result inserts automatically.
+4. Speak in Murmur, then swipe back to your app — swipe right from the left
+   edge, or tap the back link in the top-left corner. Murmur keeps listening in
+   the background.
+5. Tap the checkmark on Murmur's keyboard and the polished result appears.
 
 ## Personal dictionary
 

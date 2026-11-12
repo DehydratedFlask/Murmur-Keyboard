@@ -1,5 +1,6 @@
 import Foundation
 import WhisperKit
+import FluidAudio
 
 /// Wrapper to pass non-Sendable types across isolation boundaries when
 /// the developer has ensured safety (e.g., no concurrent mutation).
@@ -17,6 +18,7 @@ final class TranscriptionService: ObservableObject {
     @Published private(set) var modelState: ModelLoadState = .unloaded
     @Published private(set) var isTranscribing = false
     @Published private(set) var loadingProgress: String = ""
+    @Published private(set) var selectedEngine: TranscriptionEngine = .whisper
     @Published var selectedModel: WhisperModel = {
         if let raw = UserDefaults.standard.string(forKey: "selectedWhisperModel"),
            let model = WhisperModel(rawValue: raw) {
@@ -33,11 +35,49 @@ final class TranscriptionService: ObservableObject {
 
     private var whisperKit: WhisperKit?
     private var currentModelName: String?
+    private let parakeet = ParakeetTranscriptionService()
+
+    init() {
+        selectedEngine = TranscriptionEngine.persisted
+    }
+
+    // MARK: - Engine Selection
+
+    /// Switches the recognizer used for dictation. The previous engine's
+    /// weights are released immediately and the new engine starts loading, so
+    /// both models are never resident together.
+    func setEngine(_ engine: TranscriptionEngine) {
+        guard engine != selectedEngine else { return }
+
+        selectedEngine = engine
+        engine.persist()
+
+        whisperKit = nil
+        currentModelName = nil
+        modelState = .unloaded
+        loadingProgress = ""
+        SharedDefaults.setModelReady(false, progressText: nil)
+
+        Task { [weak self] in
+            await self?.parakeet.unloadModel()
+            guard let self, self.selectedEngine == engine else { return }
+            await self.loadModel()
+        }
+    }
 
     // MARK: - Model Loading
 
-    /// Loads the WhisperKit model. Automatically downloads on first launch, then cached locally.
+    /// Loads the active engine's model. Automatically downloads on first launch, then cached locally.
     func loadModel() async {
+        switch selectedEngine {
+        case .whisper:
+            await loadWhisperModel()
+        case .parakeet:
+            await loadParakeetModel()
+        }
+    }
+
+    private func loadWhisperModel() async {
         let modelName = selectedModel.whisperKitName
 
         SharedDefaults.setModelReady(false, progressText: nil)
@@ -92,6 +132,39 @@ final class TranscriptionService: ObservableObject {
         }
     }
 
+    private func loadParakeetModel() async {
+        SharedDefaults.setModelReady(false, progressText: nil)
+
+        if modelState == .loaded {
+            SharedDefaults.setModelReady(true, progressText: nil)
+            return
+        }
+
+        guard modelState != .loading else { return }
+
+        modelState = .loading
+        loadingProgress = "Downloading Parakeet model (first launch only)\u{2026}"
+        SharedDefaults.updateModelLoadingProgress(loadingProgress)
+
+        do {
+            try await parakeet.loadModel()
+            self.modelState = .loaded
+            self.loadingProgress = ""
+            SharedDefaults.setModelReady(true, progressText: nil)
+        } catch {
+            let desc = error.localizedDescription.lowercased()
+            let userMessage: String
+            if desc.contains("network") || desc.contains("internet") || desc.contains("offline") || desc.contains("timed out") {
+                userMessage = "Parakeet download failed. Check your internet connection and try again."
+            } else {
+                userMessage = "Failed to load Parakeet: \(error.localizedDescription)"
+            }
+            self.modelState = .error(userMessage)
+            self.loadingProgress = ""
+            SharedDefaults.setModelReady(false, progressText: nil)
+        }
+    }
+
     /// Unloads the current model to free memory.
     /// Waits for any active transcription to finish before unloading.
     func unloadModel() async {
@@ -101,19 +174,51 @@ final class TranscriptionService: ObservableObject {
             try? await Task.sleep(for: .milliseconds(100))
             waited += 1
         }
-        whisperKit = nil
-        currentModelName = nil
-        modelState = .unloaded
-        loadingProgress = ""
-        SharedDefaults.setModelReady(false, progressText: nil)
+
+        switch selectedEngine {
+        case .whisper:
+            whisperKit = nil
+            currentModelName = nil
+            modelState = .unloaded
+            loadingProgress = ""
+            SharedDefaults.setModelReady(false, progressText: nil)
+        case .parakeet:
+            await parakeet.unloadModel()
+            modelState = .unloaded
+            loadingProgress = ""
+            SharedDefaults.setModelReady(false, progressText: nil)
+        }
     }
 
     // MARK: - Transcription
 
-    /// Transcribes audio from the file at the given URL.
+    /// Transcribes audio from the file at the given URL with the active engine.
     /// - Parameter audioURL: Path to a WAV/M4A audio file.
     /// - Returns: Raw transcription text.
     func transcribe(audioURL: URL) async throws -> String {
+        switch selectedEngine {
+        case .whisper:
+            return try await transcribeWithWhisper(audioURL: audioURL)
+        case .parakeet:
+            return try await transcribeWithParakeet(audioURL: audioURL)
+        }
+    }
+
+    private func transcribeWithParakeet(audioURL: URL) async throws -> String {
+        guard modelState == .loaded else {
+            throw TranscriptionError.modelNotLoaded
+        }
+
+        isTranscribing = true
+        defer { isTranscribing = false }
+
+        return try await parakeet.transcribe(
+            audioURL: audioURL,
+            languageCode: MurmurPreferences.primaryLanguageCode
+        )
+    }
+
+    private func transcribeWithWhisper(audioURL: URL) async throws -> String {
         guard let whisperKit = whisperKit, modelState == .loaded else {
             throw TranscriptionError.modelNotLoaded
         }
@@ -124,10 +229,12 @@ final class TranscriptionService: ObservableObject {
         let wrapper = UnsafeSendableBox(whisperKit)
         let path = audioURL.path
         let dictionary = PersonalDictionary.enabledEntries
+        let language = MurmurPreferences.primaryLanguageCode
         let fullText = try await Self.runTranscription(
             kit: wrapper,
             audioPath: path,
-            dictionary: dictionary
+            dictionary: dictionary,
+            language: language
         )
         return fullText
     }
@@ -136,7 +243,8 @@ final class TranscriptionService: ObservableObject {
     private nonisolated static func runTranscription(
         kit: UnsafeSendableBox<WhisperKit>,
         audioPath: String,
-        dictionary: [PersonalDictionaryEntry]
+        dictionary: [PersonalDictionaryEntry],
+        language: String?
     ) async throws -> String {
         let whisperKit = kit.value
         let promptTokens: [Int]?
@@ -151,7 +259,7 @@ final class TranscriptionService: ObservableObject {
         let options = DecodingOptions(
             verbose: false,
             task: .transcribe,
-            language: "en",
+            language: language,
             temperature: 0.0,
             usePrefillPrompt: true,
             usePrefillCache: true,
@@ -238,5 +346,93 @@ enum TranscriptionError: LocalizedError {
         case .transcriptionFailed(let reason):
             return "Transcription failed: \(reason)"
         }
+    }
+}
+
+
+
+// MARK: - Recognition Engine
+
+/// The on-device recognition engines Murmur supports.
+enum TranscriptionEngine: String, CaseIterable, Identifiable {
+    case whisper
+    case parakeet
+
+    static let storageKey = "transcriptionEngine"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .whisper: return "Whisper"
+        case .parakeet: return "Parakeet"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .whisper: return "WhisperKit · smallest download"
+        case .parakeet: return "NVIDIA Parakeet · Neural Engine · larger download"
+        }
+    }
+
+    /// The engine the user last picked, defaulting to Whisper so existing
+    /// installs keep the behaviour they already had.
+    static var persisted: TranscriptionEngine {
+        guard let raw = UserDefaults.standard.string(forKey: storageKey),
+              let engine = TranscriptionEngine(rawValue: raw)
+        else {
+            return .whisper
+        }
+        return engine
+    }
+
+    func persist() {
+        UserDefaults.standard.set(rawValue, forKey: Self.storageKey)
+    }
+}
+
+// MARK: - Parakeet
+
+/// Runs NVIDIA Parakeet (TDT 0.6B) fully on-device through FluidAudio, which
+/// executes the Core ML encoder/decoder on the Neural Engine.
+///
+/// The first `loadModel()` downloads the Core ML bundles (~600 MB) from
+/// Hugging Face; afterwards they load from disk. Nothing is uploaded to a
+/// server — the download is model weights only.
+@MainActor
+final class ParakeetTranscriptionService {
+
+    private var manager: AsrManager?
+
+    var isLoaded: Bool { manager != nil }
+
+    func loadModel() async throws {
+        let models = try await AsrModels.downloadAndLoad(version: .v3)
+        let manager = AsrManager(config: .default)
+        try await manager.loadModels(models)
+        self.manager = manager
+    }
+
+    func unloadModel() async {
+        guard let manager else { return }
+        await manager.cleanup()
+        self.manager = nil
+    }
+
+    func transcribe(audioURL: URL, languageCode: String?) async throws -> String {
+        guard let manager else { throw TranscriptionError.modelNotLoaded }
+        // A fresh decoder state per dictation; Parakeet is otherwise stateless
+        // across utterances.
+        var decoderState = try TdtDecoderState()
+        // Parakeet v3 is multilingual; the language is a decoding hint, so an
+        // unsupported code is left to auto-detection rather than forced.
+        let language = languageCode.flatMap { Language(rawValue: $0) }
+        let result = try await manager.transcribe(
+            audioURL,
+            decoderState: &decoderState,
+            language: language
+        )
+        return result.text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

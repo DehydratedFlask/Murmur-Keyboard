@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Scheme
-   LastUpgradeVersion = "2640"
+   LastUpgradeVersion = "2700"
    version = "1.7">
    <BuildAction
       parallelizeBuildables = "YES"
@@ -32,6 +32,20 @@
                BlueprintIdentifier = "2CD9C75CD1C959165234AEAC"
                BuildableName = "MurmurKeyboard.appex"
                BlueprintName = "MurmurKeyboard"
+               ReferencedContainer = "container:Murmur.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "YES"
+            buildForProfiling = "YES"
+            buildForArchiving = "YES"
+            buildForAnalyzing = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "5F5EC9DE6A0CC90D39740259"
+               BuildableName = "MurmurWidget.appex"
+               BlueprintName = "MurmurWidget"
                ReferencedContainer = "container:Murmur.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>

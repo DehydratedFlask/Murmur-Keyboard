@@ -11,7 +11,10 @@ class KeyboardViewController: UIInputViewController {
     private var pendingTextTimer: Timer?
     private var heightConstraint: NSLayoutConstraint?
 
-    private let dictationTimeout: TimeInterval = 75
+    /// Stale-session timeout, driven by the app's Session duration setting.
+    private var dictationTimeout: TimeInterval {
+        TimeInterval(SharedDefaults.dictationSessionDurationMinutes() * 60)
+    }
 
     /// ViewModel shared with the SwiftUI view layer.
     private let viewModel = KeyboardViewModel()
@@ -60,9 +63,9 @@ class KeyboardViewController: UIInputViewController {
         hostingController = hosting
 
         // Explicit height so the system allocates space for the keyboard.
-        // 36 (prediction row) + 0.5 (separator) + 8 (top pad) + 4×42 (key rows)
-        // + 3×11 (row spacing) + 3 (bottom pad) ≈ 282
-        let desiredHeight = view.heightAnchor.constraint(equalToConstant: 282)
+        // 48 (toolbar) + 8/3 (key padding) + 4×42 (key rows) + 3×11 (row
+        // spacing) + 30 (globe footer) + 11 (card inset) ≈ 301
+        let desiredHeight = view.heightAnchor.constraint(equalToConstant: 304)
         desiredHeight.priority = .init(999)
         desiredHeight.isActive = true
         heightConstraint = desiredHeight
@@ -105,7 +108,7 @@ class KeyboardViewController: UIInputViewController {
         with coordinator: any UIViewControllerTransitionCoordinator
     ) {
         super.viewWillTransition(to: size, with: coordinator)
-        heightConstraint?.constant = size.width > size.height ? 216 : 282
+        heightConstraint?.constant = size.width > size.height ? 240 : 304
     }
 
     override func textDidChange(_ textInput: UITextInput?) {
@@ -121,6 +124,12 @@ class KeyboardViewController: UIInputViewController {
         viewModel.restoreActiveDictationSession()
 
         if let abandoned = SharedDefaults.consumeAbandonedDictationSession() {
+            if viewModel.consumeAbandonmentSuppression() {
+                SharedDefaults.clearDictationSession()
+                viewModel.activeSessionID = nil
+                viewModel.refreshSharedState()
+                return
+            }
             if abandoned.sessionID == nil || abandoned.sessionID == viewModel.activeSessionID {
                 SharedDefaults.clearDictationSession()
                 viewModel.activeSessionID = nil
@@ -226,8 +235,16 @@ final class KeyboardViewModel: ObservableObject {
     @Published var enablesReturnKeyAutomatically = false
     @Published var returnKeyEnabled = true
     @Published var isDarkMode = false
+    /// Briefly true right after a finished dictation is inserted, so the
+    /// toolbar can confirm that the text landed.
+    @Published var showsInsertionConfirmation = false
     var activeSessionID: String?
     private var handoffDismissTask: Task<Void, Never>?
+    private var insertionConfirmationTask: Task<Void, Never>?
+
+    /// Set when the user cancels from the keyboard, so the failure signal the
+    /// container app sends back is not surfaced as an error banner.
+    private var suppressesAbandonmentNotice = false
 
     // Haptic feedback generators
     private let lightHaptic = UIImpactFeedbackGenerator(style: .light)
@@ -339,6 +356,13 @@ final class KeyboardViewModel: ObservableObject {
 
     var isUppercase: Bool {
         isShifted || isCapsLocked
+    }
+
+    /// Whether the recording panel replaces the key grid.
+    var showsDictationPanel: Bool {
+        dictationPhase == .preparing
+            || dictationPhase == .recording
+            || dictationPhase == .processing
     }
 
     // MARK: - Haptics
@@ -576,6 +600,16 @@ final class KeyboardViewModel: ObservableObject {
 
     func handleMurmurButtonTap() {
         refreshSharedState()
+        guard hasFullAccess else {
+            // A dead control teaches nothing; explain the missing switch.
+            presentHandoffError(
+                NSLocalizedString(
+                    "Turn on Full Access for Murmur in Settings › General › Keyboard › Keyboards.",
+                    comment: "Keyboard dictation requested without Full Access"
+                )
+            )
+            return
+        }
         if hasPendingDictation {
             _ = insertPendingDictationIfAvailable()
             return
@@ -587,6 +621,7 @@ final class KeyboardViewModel: ObservableObject {
         case .preparing, .processing, .ready:
             break
         case .idle, .failed:
+            triggerLightHaptic()
             openMurmurForDictation()
         }
     }
@@ -608,7 +643,19 @@ final class KeyboardViewModel: ObservableObject {
         self.activeSessionID = nil
         refreshSharedState()
         autoCapitalize()
+        confirmInsertion()
         return true
+    }
+
+    private func confirmInsertion() {
+        showsInsertionConfirmation = true
+        insertionConfirmationTask?.cancel()
+        insertionConfirmationTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.6))
+            if !Task.isCancelled {
+                self.showsInsertionConfirmation = false
+            }
+        }
     }
 
     private func requestStop() {
@@ -617,6 +664,40 @@ final class KeyboardViewModel: ObservableObject {
         SharedDefaults.setDictationPhase(.processing, sessionID: activeSessionID)
         SharedDefaults.requestDictationStop(sessionID: activeSessionID)
         refreshSharedState()
+    }
+
+    /// Stops recording from the dictation panel and lets Murmur transcribe,
+    /// clean up and insert the result.
+    func finishDictation() {
+        guard dictationPhase == .recording else { return }
+        requestStop()
+    }
+
+    /// Drops the current dictation. Nothing is inserted into the document, and
+    /// the container app is asked to release the microphone.
+    func cancelDictation() {
+        guard let sessionID = activeSessionID else {
+            refreshSharedState()
+            return
+        }
+        triggerMediumHaptic()
+        suppressesAbandonmentNotice = true
+
+        SharedDefaults.clearPendingText()
+        SharedDefaults.clearDictationSession()
+        activeSessionID = nil
+
+        // Sent after clearing: clearDictationSession() also resets the
+        // persistent stop flag, which would cancel the request.
+        SharedDefaults.requestDictationStop(sessionID: sessionID)
+        refreshSharedState()
+    }
+
+    /// Consumes the flag set by `cancelDictation()` so the deliberate cancel is
+    /// not reported back to the user as a failed dictation.
+    func consumeAbandonmentSuppression() -> Bool {
+        defer { suppressesAbandonmentNotice = false }
+        return suppressesAbandonmentNotice
     }
 
     private func textForInsertion(_ text: String) -> String {
@@ -639,6 +720,7 @@ final class KeyboardViewModel: ObservableObject {
     func openMurmurForDictation() {
         guard hasFullAccess else { return }
 
+        suppressesAbandonmentNotice = false
         let sessionID = UUID().uuidString
         activeSessionID = sessionID
         SharedDefaults.beginDictationSession(sessionID: sessionID)

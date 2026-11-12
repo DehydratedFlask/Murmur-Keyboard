@@ -103,6 +103,10 @@ struct OnboardingView: View {
                     howItWorksCard
                 }
 
+                if page == .handoff {
+                    handoffCard
+                }
+
                 if page == .enableKeyboard {
                     setupCard
                 }
@@ -160,6 +164,31 @@ struct OnboardingView: View {
                 .stroke(Color.primary.opacity(colorScheme == .dark ? 0.10 : 0.06), lineWidth: 1)
         )
         .shadow(color: .black.opacity(colorScheme == .dark ? 0.22 : 0.05), radius: 18, y: 8)
+    }
+
+    private var handoffCard: some View {
+        VStack(spacing: 16) {
+            OnboardingStepView(
+                icon: "hand.draw.fill",
+                title: "Swipe right from the left edge"
+            )
+            OnboardingStepView(
+                icon: "waveform",
+                title: "Murmur keeps listening in the background"
+            )
+            OnboardingStepView(
+                icon: "checkmark.circle.fill",
+                title: "Tap the checkmark on Murmur’s keyboard to paste"
+            )
+        }
+        .padding(22)
+        .frame(maxWidth: .infinity)
+        .background(Color(.secondarySystemBackground).opacity(colorScheme == .dark ? 0.92 : 1.0), in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                .stroke(onboardingAccent.opacity(colorScheme == .dark ? 0.20 : 0.12), lineWidth: 1)
+        )
+        .shadow(color: onboardingAccent.opacity(colorScheme == .dark ? 0.12 : 0.08), radius: 20, y: 10)
     }
 
     private var setupCard: some View {
@@ -279,6 +308,7 @@ private struct OnboardingStepView: View {
 private enum OnboardingPage: Int, CaseIterable, Identifiable {
     case welcome
     case howItWorks
+    case handoff
     case privacy
     case enableKeyboard
 
@@ -290,6 +320,8 @@ private enum OnboardingPage: Int, CaseIterable, Identifiable {
             return "waveform"
         case .howItWorks:
             return "sparkles"
+        case .handoff:
+            return "hand.draw.fill"
         case .privacy:
             return "lock.shield.fill"
         case .enableKeyboard:
@@ -303,6 +335,8 @@ private enum OnboardingPage: Int, CaseIterable, Identifiable {
             return "Your voice, your words, your device."
         case .howItWorks:
             return "How It Works"
+        case .handoff:
+            return "Swipe Back to Your App"
         case .privacy:
             return "100% Private"
         case .enableKeyboard:
@@ -316,6 +350,8 @@ private enum OnboardingPage: Int, CaseIterable, Identifiable {
             return "On-device speech-to-text that never leaves your phone."
         case .howItWorks:
             return "Speak naturally, let Murmur handle the transcription, and watch your text appear instantly."
+        case .handoff:
+            return "iOS only lets the Murmur app — not the keyboard — use the microphone. So Murmur opens for a moment: say what you need, then swipe back and finish."
         case .privacy:
             return "No internet required. No accounts. No data collection. Everything stays on your iPhone."
         case .enableKeyboard:
@@ -324,7 +360,7 @@ private enum OnboardingPage: Int, CaseIterable, Identifiable {
     }
 
     var hasCard: Bool {
-        self == .howItWorks || self == .enableKeyboard
+        self == .howItWorks || self == .handoff || self == .enableKeyboard
     }
 }
 

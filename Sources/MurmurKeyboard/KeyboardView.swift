@@ -29,6 +29,10 @@ struct KeyboardView: View {
     @Environment(\.verticalSizeClass) private var verticalSizeClass
     @State private var backspaceLongPressed = false
 
+    /// Murmur's accent, matching the container app so the keyboard reads as
+    /// the same product rather than a generic extension.
+    private let murmurAccent = Color(red: 0.39, green: 0.28, blue: 0.95)
+
     // MARK: - Native iOS Keyboard Layout Constants
 
     private let keySpacing: CGFloat = 6
@@ -60,23 +64,29 @@ struct KeyboardView: View {
     var body: some View {
         VStack(spacing: 0) {
             banners
-            predictionRow
-            Rectangle()
-                .fill(separatorColor)
-                .frame(height: 0.5)
-            glassKeyboardRows
+            if viewModel.showsDictationPanel {
+                dictationPanel
+                    .transition(.opacity)
+            } else {
+                toolbarRow
+                keyboardRows
+                if viewModel.showGlobeKey {
+                    keyboardFooter
+                }
+            }
         }
+        // Fill the height the system gave the input view. Without this the
+        // content only reaches its ideal height and the host app shows through
+        // a strip under the bottom key row.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background { keyboardBackdrop }
+        // Rounded card inset from the edges, the way Amical's keyboard floats.
+        .padding(.horizontal, 5)
+        .padding(.top, 6)
+        .padding(.bottom, 5)
         .animation(.snappy(duration: 0.18), value: viewModel.showNumbers)
         .animation(.snappy(duration: 0.18), value: viewModel.showSymbols)
-    }
-
-    @ViewBuilder
-    private var glassKeyboardRows: some View {
-        // Each key owns its glass surface. A single container around the entire
-        // matrix causes adjacent caps to merge and can wash out glyph contrast
-        // in the iOS 27 beta keyboard-extension renderer.
-        keyboardRows
+        .animation(.snappy(duration: 0.24), value: viewModel.showsDictationPanel)
     }
 
     private var keyboardRows: some View {
@@ -113,140 +123,311 @@ struct KeyboardView: View {
 
     }
 
-    // MARK: - Prediction Row (with Murmur logo button)
+    // MARK: - Toolbar Row
 
-    /// Mimics Apple's predictive-text suggestion row.
-    /// Center slot holds the Murmur dictation button; side slots are empty
-    /// (like a keyboard with no active suggestions).
-    private var predictionRow: some View {
-        HStack(spacing: 0) {
+    /// Floating chrome inside the keyboard card: a quiet status line on the
+    /// left and the white microphone pill on the right, as in Amical's
+    /// keyboard.
+    private var toolbarRow: some View {
+        HStack(spacing: 8) {
             HStack(spacing: 5) {
-                Image(systemName: "lock.shield")
+                Image(systemName: toolbarStatusIcon)
                     .font(.system(size: 11, weight: .semibold))
-                Text(viewModel.hasFullAccess ? "On-device" : "Full Access")
+                Text(toolbarStatusTitle)
                     .font(.system(size: 12, weight: .medium))
                     .lineLimit(1)
             }
-            .foregroundStyle(
-                viewModel.hasFullAccess
-                    ? Color.secondary
-                    : Color.orange
-            )
-                .frame(maxWidth: .infinity)
-                .frame(height: predictionRowHeight)
+            .foregroundStyle(toolbarStatusColor)
+            .accessibilityElement(children: .combine)
 
-            Rectangle()
-                .fill(separatorColor)
-                .frame(width: 0.5, height: 18)
+            Spacer(minLength: 8)
 
-            Button {
-                viewModel.handleMurmurButtonTap()
-            } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: dictationButtonImage)
-                        .font(.system(size: 13, weight: .semibold))
-                    Text(dictationButtonTitle)
-                        .font(.system(size: 14, weight: .medium))
-                }
-                .foregroundStyle(murmurButtonColor)
-                .frame(maxWidth: .infinity)
-                .frame(height: predictionRowHeight)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .disabled(
-                !viewModel.hasFullAccess ||
-                viewModel.dictationPhase == .preparing ||
-                viewModel.dictationPhase == .processing
-            )
-            .accessibilityLabel(dictationButtonAccessibilityLabel)
-            .accessibilityHint(dictationButtonAccessibilityHint)
-
-            Rectangle()
-                .fill(separatorColor)
-                .frame(width: 0.5, height: 18)
-
-            HStack(spacing: 4) {
-                Circle()
-                    .fill(dictationStatusColor)
-                    .frame(width: 6, height: 6)
-                Text(dictationStatusTitle)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity)
-            .frame(height: predictionRowHeight)
+            dictationPill
         }
-        .background(predictionRowBackground)
+        .padding(.horizontal, 14)
+        .padding(.top, 8)
+        .padding(.bottom, 4)
+        .frame(height: predictionRowHeight + 12)
     }
 
-    private var dictationButtonImage: String {
+    /// The white pill from Amical's toolbar: microphone plus the Murmur mark.
+    /// It turns into an accent checkmark pill when a result is waiting.
+    private var dictationPill: some View {
+        Button {
+            viewModel.handleMurmurButtonTap()
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: dictationButtonSymbol)
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(dictationButtonGlyph)
+                Image(systemName: "waveform")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(
+                        viewModel.hasPendingDictation ? Color.white : murmurAccent
+                    )
+            }
+            .padding(.horizontal, 14)
+            .frame(height: dictationPillHeight)
+            .background(Capsule(style: .continuous).fill(dictationPillFill))
+            .overlay(
+                Capsule(style: .continuous)
+                    .strokeBorder(
+                        Color.black.opacity(viewModel.isDarkMode ? 0 : 0.08),
+                        lineWidth: 0.5
+                    )
+            )
+            .contentShape(Capsule(style: .continuous))
+        }
+        .buttonStyle(DictationButtonPressStyle())
+        .accessibilityLabel(dictationButtonAccessibilityLabel)
+        .accessibilityHint(dictationButtonAccessibilityHint)
+    }
+
+    private var dictationPillHeight: CGFloat {
+        verticalSizeClass == .compact ? 28 : 34
+    }
+
+    private var dictationButtonSymbol: String {
+        viewModel.hasPendingDictation ? "checkmark" : "mic.fill"
+    }
+
+    private var dictationPillFill: Color {
+        if viewModel.hasPendingDictation { return murmurAccent }
+        if !viewModel.hasFullAccess {
+            return viewModel.isDarkMode
+                ? Color.white.opacity(0.14)
+                : Color.white.opacity(0.60)
+        }
+        return .white
+    }
+
+    private var dictationButtonGlyph: Color {
+        if viewModel.hasPendingDictation { return .white }
+        if !viewModel.hasFullAccess {
+            return viewModel.isDarkMode ? .white.opacity(0.50) : .black.opacity(0.35)
+        }
+        return .black
+    }
+
+    private var toolbarStatusTitle: String {
+        if viewModel.showsInsertionConfirmation { return "Inserted" }
+        if !viewModel.hasFullAccess { return "Full Access" }
+        if viewModel.hasPendingDictation { return "Ready to insert" }
+        if !viewModel.isModelWarm { return "Warming up" }
+        return "On-device"
+    }
+
+    private var toolbarStatusIcon: String {
+        if viewModel.showsInsertionConfirmation { return "checkmark.circle.fill" }
+        if !viewModel.hasFullAccess { return "exclamationmark.triangle.fill" }
         if viewModel.hasPendingDictation { return "checkmark.circle.fill" }
-        switch viewModel.dictationPhase {
-        case .recording: return "stop.fill"
-        case .preparing, .processing: return "ellipsis"
-        case .ready: return "checkmark.circle.fill"
-        case .idle, .failed: return viewModel.isModelWarm ? "mic.fill" : "waveform"
-        }
+        return "lock.shield"
     }
 
-    private var dictationButtonTitle: String {
-        if viewModel.hasPendingDictation { return "Insert" }
-        switch viewModel.dictationPhase {
-        case .recording: return "Stop"
-        case .preparing: return "Starting…"
-        case .processing: return "Transcribing…"
-        case .ready: return "Insert"
-        case .idle, .failed: return "Murmur"
-        }
-    }
-
-    private var dictationStatusTitle: String {
-        switch viewModel.dictationPhase {
-        case .recording: return "Listening"
-        case .preparing: return "Starting"
-        case .processing: return "Working"
-        case .ready: return "Done"
-        case .failed: return "Retry"
-        case .idle: return viewModel.isModelWarm ? "Ready" : "Loading"
-        }
-    }
-
-    private var dictationStatusColor: Color {
-        switch viewModel.dictationPhase {
-        case .recording: return .red
-        case .preparing, .processing: return .orange
-        case .ready: return .green
-        case .failed: return .red
-        case .idle: return viewModel.isModelWarm ? .green : .orange
-        }
+    private var toolbarStatusColor: Color {
+        if viewModel.showsInsertionConfirmation { return .green }
+        if !viewModel.hasFullAccess { return .orange }
+        if viewModel.hasPendingDictation { return .green }
+        return .secondary
     }
 
     private var dictationButtonAccessibilityLabel: String {
         if viewModel.hasPendingDictation { return "Insert completed dictation" }
-        switch viewModel.dictationPhase {
-        case .recording: return "Stop Murmur dictation"
-        case .preparing: return "Murmur dictation is starting"
-        case .processing: return "Murmur is transcribing"
-        case .ready: return "Insert completed dictation"
-        case .idle, .failed: return "Start Murmur dictation"
-        }
+        return viewModel.isModelWarm ? "Start Murmur dictation" : "Murmur is warming up"
     }
 
     private var dictationButtonAccessibilityHint: String {
         if !viewModel.hasFullAccess {
-            return "Enable Full Access to use dictation."
+            return "Enable Full Access in Settings to dictate with Murmur."
         }
+        if viewModel.hasPendingDictation {
+            return "Puts the finished text into this field."
+        }
+        return "Briefly opens Murmur so iOS can start the microphone. Come back here when you have finished speaking."
+    }
+
+    // MARK: - Dictation Panel
+
+    /// Full-width recording surface shown while Murmur owns the microphone.
+    /// Cancel on the left, confirm on the right, live waveform in the middle —
+    /// the arrangement Wispr Flow uses, minus its live transcript.
+    private var dictationPanel: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 0) {
+                panelControl(
+                    systemImage: "xmark",
+                    isPrimary: false,
+                    enabled: true,
+                    label: "Cancel dictation",
+                    hint: "Stops this dictation without inserting any text."
+                ) {
+                    viewModel.cancelDictation()
+                }
+
+                Spacer(minLength: 0)
+
+                panelControl(
+                    systemImage: "checkmark",
+                    isPrimary: true,
+                    enabled: viewModel.dictationPhase == .recording,
+                    label: "Finish dictation",
+                    hint: "Murmur transcribes, cleans up and inserts the result."
+                ) {
+                    viewModel.finishDictation()
+                }
+            }
+            .padding(.horizontal, 18)
+            .padding(.top, 12)
+
+            Spacer(minLength: 0)
+
+            panelStatus
+
+            Spacer(minLength: 0)
+
+            panelFooter
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .transition(.opacity)
+    }
+
+    @ViewBuilder
+    private var panelStatus: some View {
+        VStack(spacing: 12) {
+            switch viewModel.dictationPhase {
+            case .processing:
+                ProgressView()
+                    .tint(murmurAccent)
+                    .scaleEffect(1.25)
+                    .frame(height: 56)
+            default:
+                ListeningWaveform(
+                    isActive: viewModel.dictationPhase == .recording,
+                    tint: panelForeground
+                )
+            }
+
+            VStack(spacing: 4) {
+                Text(panelTitle)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(panelForeground)
+
+                if let detail = panelDetail {
+                    Text(detail)
+                        .font(.system(size: 12))
+                        .foregroundStyle(panelForeground.opacity(0.62))
+                        .multilineTextAlignment(.center)
+                        .lineLimit(2)
+                        .padding(.horizontal, 28)
+                }
+            }
+            .accessibilityElement(children: .combine)
+        }
+    }
+
+    private var panelTitle: String {
         switch viewModel.dictationPhase {
-        case .recording:
-            return "Stops recording. Murmur will transcribe, clean up, and insert the result automatically."
-        case .preparing, .processing:
-            return "Please wait."
-        case .ready:
-            return "Inserts the completed text into this field."
-        case .idle, .failed:
-            return "Briefly opens Murmur so iOS can start microphone recording. Use the system back control to return here."
+        case .preparing: return "Starting…"
+        case .processing: return "Transcribing…"
+        case .recording, .ready, .idle, .failed: return "Listening"
         }
+    }
+
+    private var panelDetail: String? {
+        switch viewModel.dictationPhase {
+        case .preparing:
+            return NSLocalizedString(
+                "Getting the microphone ready",
+                comment: "Keyboard dictation panel detail while preparing"
+            )
+        case .recording:
+            return NSLocalizedString(
+                "On-device microphone",
+                comment: "Keyboard dictation panel detail while listening"
+            )
+        case .processing:
+            return NSLocalizedString(
+                "Turning speech into text",
+                comment: "Keyboard dictation panel detail while transcribing"
+            )
+        case .idle, .ready, .failed:
+            return nil
+        }
+    }
+
+    private var panelFooter: some View {
+        HStack(spacing: 12) {
+            if viewModel.showGlobeKey {
+                Button {
+                    viewModel.advanceToNextInputMode()
+                } label: {
+                    Image(systemName: "globe")
+                        .font(.system(size: 17))
+                        .foregroundStyle(panelForeground.opacity(0.55))
+                        .frame(width: 32, height: 32)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Next keyboard")
+            }
+
+            Spacer(minLength: 0)
+
+            HStack(spacing: 5) {
+                Image(systemName: "waveform")
+                    .font(.system(size: 10, weight: .semibold))
+                Text("Murmur")
+                    .font(.system(size: 11, weight: .semibold))
+            }
+            .foregroundStyle(panelForeground.opacity(0.4))
+            .accessibilityHidden(true)
+        }
+        .padding(.horizontal, 18)
+        .padding(.bottom, 6)
+        .frame(height: 38)
+    }
+
+    private func panelControl(
+        systemImage: String,
+        isPrimary: Bool,
+        enabled: Bool,
+        label: String,
+        hint: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        let diameter: CGFloat = verticalSizeClass == .compact ? 38 : 46
+        return Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: diameter * 0.36, weight: .semibold))
+                .foregroundStyle(controlGlyphColor(isPrimary: isPrimary))
+                .frame(width: diameter, height: diameter)
+                .background {
+                    chromeSurface(
+                        Circle(),
+                        tint: controlTint(isPrimary: isPrimary)
+                    )
+                }
+                .contentShape(Circle())
+        }
+        .buttonStyle(PanelControlPressStyle())
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.35)
+        .accessibilityLabel(label)
+        .accessibilityHint(hint)
+    }
+
+    private func controlTint(isPrimary: Bool) -> Color {
+        isPrimary ? .white : Color(red: 0.13, green: 0.13, blue: 0.14)
+    }
+
+    private func controlGlyphColor(isPrimary: Bool) -> Color {
+        isPrimary ? .black : .white
+    }
+
+    private var panelForeground: Color {
+        viewModel.isDarkMode
+            ? Color.white.opacity(0.92)
+            : Color(red: 0.22, green: 0.22, blue: 0.24)
     }
 
     // MARK: - Letters Layout (matches Apple QWERTY)
@@ -317,9 +498,6 @@ struct KeyboardView: View {
     private var bottomRow: some View {
         HStack(spacing: keySpacing) {
             numberToggleKey
-            if viewModel.showGlobeKey {
-                globeKey
-            }
             spaceKey
             if let shortcut = contextualShortcut {
                 characterKey(
@@ -330,6 +508,24 @@ struct KeyboardView: View {
             }
             returnKey
         }
+    }
+
+    /// The globe lives below the keys, like Apple's and Amical's keyboards,
+    /// instead of taking a slot on the bottom row.
+    private var keyboardFooter: some View {
+        HStack(spacing: 0) {
+            if viewModel.showGlobeKey {
+                InputModeSwitchButton(viewModel: viewModel)
+                    .frame(width: 44, height: 30)
+                    .accessibilityLabel("Switch keyboard")
+                    .accessibilityHint("Touch and hold to choose a keyboard.")
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.bottom, 2)
+        .frame(height: 30)
     }
 
     // MARK: - Key Views
@@ -457,15 +653,6 @@ struct KeyboardView: View {
         }
         .buttonStyle(IOSKeyboardPressStyle(isDarkMode: viewModel.isDarkMode))
         .foregroundStyle(keyTextColor)
-    }
-
-    private var globeKey: some View {
-        InputModeSwitchButton(viewModel: viewModel)
-            .frame(width: 42, height: keyHeight)
-            .background { keySurface(isAction: true) }
-            .foregroundStyle(keyTextColor)
-        .accessibilityLabel("Switch keyboard")
-        .accessibilityHint("Touch and hold to choose a keyboard.")
     }
 
     private var spaceKey: some View {
@@ -599,94 +786,79 @@ struct KeyboardView: View {
         isAction: Bool = false,
         isProminent: Bool = false
     ) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
-        if #available(iOS 26.0, *) {
-            Color.clear
-                .glassEffect(
-                    .regular
-                        .tint(isProminent ? Color.accentColor : (isAction ? actionKeyTint : letterKeyTint))
-                        .interactive(),
-                    in: .rect(cornerRadius: 8)
-                )
-                .shadow(color: keyShadow.opacity(0.55), radius: 0.5, y: 1)
-        } else {
-            shape
-                .fill(isProminent ? Color.accentColor : (isAction ? darkKeyBackground : lightKeyBackground))
-                .overlay(shape.stroke(Color.white.opacity(viewModel.isDarkMode ? 0.08 : 0.45), lineWidth: 0.5))
-                .shadow(color: keyShadow, radius: 0, y: 1)
-        }
+        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
+        shape
+            .fill(
+                isProminent
+                    ? murmurAccent
+                    : (isAction ? darkKeyBackground : lightKeyBackground)
+            )
+            .shadow(color: keyShadow, radius: 0, y: 1)
     }
 
-    private var letterKeyTint: Color {
-        // Keep a light glass cap even when a beta host reports the wrong
-        // keyboardAppearance so black glyphs retain sufficient contrast.
-        Color.white.opacity(viewModel.isDarkMode ? 0.30 : 0.42)
-    }
-
-    private var actionKeyTint: Color {
-        Color.gray.opacity(viewModel.isDarkMode ? 0.30 : 0.18)
-    }
-
-    @ViewBuilder
+    /// One rounded card behind the whole keyboard, the way Amical's keyboard
+    /// floats: tray, keys and chrome all come from the same tonal family.
     private var keyboardBackdrop: some View {
-        if #available(iOS 26.0, *) {
-            Rectangle()
-                .fill(.ultraThinMaterial)
-                .overlay(viewModel.isDarkMode ? Color.black.opacity(0.22) : Color.white.opacity(0.10))
-        } else {
-            keyboardBackground
-        }
+        RoundedRectangle(cornerRadius: 26, style: .continuous)
+            .fill(keyboardBackground)
+            .overlay(
+                RoundedRectangle(cornerRadius: 26, style: .continuous)
+                    .strokeBorder(
+                        Color.white.opacity(viewModel.isDarkMode ? 0.06 : 0.5),
+                        lineWidth: 0.5
+                    )
+            )
     }
 
-    // MARK: - Colors (match native iOS keyboard)
+    // MARK: - Palette
 
     private var keyboardBackground: Color {
         viewModel.isDarkMode
             ? Color(red: 0.11, green: 0.11, blue: 0.12)
-            : Color(red: 0.82, green: 0.84, blue: 0.86)
+            : Color(red: 0.82, green: 0.83, blue: 0.85)
     }
 
     private var lightKeyBackground: Color {
         viewModel.isDarkMode
-            ? Color(red: 0.72, green: 0.72, blue: 0.74)
+            ? Color(red: 0.18, green: 0.18, blue: 0.19)
             : .white
     }
 
     private var darkKeyBackground: Color {
         viewModel.isDarkMode
-            ? Color(red: 0.52, green: 0.53, blue: 0.55)
-            : Color(red: 0.68, green: 0.71, blue: 0.75)
+            ? Color(red: 0.18, green: 0.18, blue: 0.19)
+            : Color(red: 0.75, green: 0.76, blue: 0.78)
     }
 
     private var keyTextColor: Color {
-        .black
-    }
-
-    /// Prediction row background — slightly lighter than the keyboard tray,
-    /// matching Apple's suggestion bar appearance.
-    private var predictionRowBackground: Color {
-        viewModel.isDarkMode
-            ? Color(red: 0.14, green: 0.14, blue: 0.15)
-            : Color(red: 0.86, green: 0.87, blue: 0.89)
-    }
-
-    /// Murmur button accent color in the prediction row
-    private var murmurButtonColor: Color {
-        if !viewModel.hasFullAccess { return .gray }
-        return viewModel.isModelWarm ? Color.accentColor : .secondary
-    }
-
-    /// Thin dividers between prediction slots and below the prediction row
-    private var separatorColor: Color {
-        viewModel.isDarkMode
-            ? Color.white.opacity(0.12)
-            : Color.black.opacity(0.12)
+        viewModel.isDarkMode ? .white : .black
     }
 
     private var keyShadow: Color {
-        viewModel.isDarkMode
-            ? Color.black.opacity(0.4)
-            : Color(red: 0.53, green: 0.54, blue: 0.56)
+        viewModel.isDarkMode ? .clear : Color.black.opacity(0.12)
+    }
+
+    /// Shared Liquid Glass chrome for the microphone, panel controls and other
+    /// small controls, so they read as the same material as the tray.
+    @ViewBuilder
+    private func chromeSurface<S: Shape>(
+        _ shape: S,
+        tint: Color
+    ) -> some View {
+        if #available(iOS 26.0, *) {
+            shape
+                .fill(.clear)
+                .glassEffect(
+                    .regular
+                        .tint(tint)
+                        .interactive(),
+                    in: shape
+                )
+        } else {
+            shape
+                .fill(tint)
+                .overlay(shape.stroke(Color.white.opacity(0.35), lineWidth: 0.5))
+        }
     }
 }
 
@@ -700,7 +872,7 @@ private struct SpaceInputButton: UIViewRepresentable {
     func makeUIView(context: Context) -> UIButton {
         let button = UIButton(type: .custom)
         button.setTitle("space", for: .normal)
-        button.setTitleColor(.black, for: .normal)
+        button.setTitleColor(viewModel.isDarkMode ? .white : .black, for: .normal)
         button.titleLabel?.font = .systemFont(ofSize: 16)
         button.backgroundColor = .clear
         button.accessibilityLabel = "Space"
@@ -723,6 +895,7 @@ private struct SpaceInputButton: UIViewRepresentable {
     }
 
     func updateUIView(_ button: UIButton, context: Context) {
+        button.setTitleColor(viewModel.isDarkMode ? .white : .black, for: .normal)
         if !context.coordinator.isTracking {
             button.setTitle("space", for: .normal)
         }
@@ -785,7 +958,7 @@ private struct InputModeSwitchButton: UIViewRepresentable {
                 .withConfiguration(UIImage.SymbolConfiguration(pointSize: 16, weight: .medium)),
             for: .normal
         )
-        button.tintColor = .black
+        button.tintColor = .secondaryLabel
         button.accessibilityLabel = "Switch keyboard"
         button.accessibilityHint = "Touch and hold to choose a keyboard."
         button.addTarget(
@@ -797,7 +970,7 @@ private struct InputModeSwitchButton: UIViewRepresentable {
     }
 
     func updateUIView(_ button: UIButton, context: Context) {
-        button.tintColor = .black
+        button.tintColor = .secondaryLabel
     }
 
     @MainActor
@@ -864,7 +1037,7 @@ private struct AlternateInputKey<Label: View>: View {
                         } label: {
                             Text(alternative)
                                 .font(.system(size: 20, weight: .regular))
-                                .foregroundStyle(.black)
+                                .foregroundStyle(isDarkMode ? .white : .black)
                                 .frame(minWidth: 31, minHeight: 42)
                                 .contentShape(Rectangle())
                         }
@@ -874,20 +1047,8 @@ private struct AlternateInputKey<Label: View>: View {
                 }
                 .padding(4)
                 .background {
-                    if #available(iOS 26.0, *) {
-                        Color.clear
-                            .glassEffect(
-                                .regular.tint(
-                                    Color.white.opacity(isDarkMode ? 0.58 : 0.72)
-                                ),
-                                in: .rect(cornerRadius: 10)
-                            )
-                    } else {
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(
-                                Color.white
-                            )
-                    }
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(isDarkMode ? Color(red: 0.26, green: 0.26, blue: 0.28) : .white)
                 }
                 .shadow(color: .black.opacity(0.25), radius: 5, y: 2)
                 .fixedSize()
@@ -932,20 +1093,83 @@ private struct KeyPopup: View {
     var body: some View {
         Text(text)
             .font(.system(size: 30, weight: .regular))
-            .foregroundStyle(.black)
+            .foregroundStyle(isDarkMode ? .white : .black)
             .frame(width: 48, height: 58)
             .background {
-                if #available(iOS 26.0, *) {
-                    Color.clear
-                        .glassEffect(
-                            .regular.tint(Color.white.opacity(isDarkMode ? 0.40 : 0.55)),
-                            in: .rect(cornerRadius: 12)
-                        )
-                } else {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(Color.white)
-                }
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(isDarkMode ? Color(red: 0.26, green: 0.26, blue: 0.28) : .white)
             }
             .shadow(color: .black.opacity(isDarkMode ? 0.45 : 0.22), radius: 4, y: 2)
+    }
+}
+
+
+// MARK: - Listening Waveform
+
+/// A calm, level-independent waveform for the dictation panel. The keyboard
+/// extension cannot read the microphone (the container app owns it), so the
+/// bars animate on a fixed envelope shaped like a spoken phrase.
+private struct ListeningWaveform: View {
+    let isActive: Bool
+    let tint: Color
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private static let amplitudes: [CGFloat] = [
+        0.20, 0.42, 0.26, 0.58, 0.78, 0.95, 0.38, 0.68, 0.54, 0.30, 0.18, 0.40,
+    ]
+
+    private let barWidth: CGFloat = 7
+    private let barSpacing: CGFloat = 6
+    private let stripHeight: CGFloat = 56
+
+    var body: some View {
+        TimelineView(
+            .animation(minimumInterval: 1.0 / 24.0, paused: !isActive || reduceMotion)
+        ) { timeline in
+            let time = timeline.date.timeIntervalSinceReferenceDate
+            HStack(alignment: .center, spacing: barSpacing) {
+                ForEach(Self.amplitudes.indices, id: \.self) { index in
+                    Capsule(style: .continuous)
+                        .fill(tint)
+                        .frame(width: barWidth, height: barHeight(index: index, time: time))
+                }
+            }
+            .frame(height: stripHeight)
+        }
+        .frame(height: stripHeight)
+        .accessibilityHidden(true)
+    }
+
+    private func barHeight(index: Int, time: TimeInterval) -> CGFloat {
+        let envelope = Self.amplitudes[index]
+        guard isActive, !reduceMotion else {
+            return 9 + envelope * 36
+        }
+        let phase = Double(index) * 0.9
+        let wave = 0.5
+            + 0.30 * sin(time * 3.4 + phase)
+            + 0.20 * sin(time * 1.9 + phase * 1.7)
+        let clamped = min(max(wave, 0.05), 1.0)
+        return 9 + envelope * 47 * (0.35 + 0.65 * CGFloat(clamped))
+    }
+}
+
+// MARK: - Press Styles
+
+private struct DictationButtonPressStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.9 : 1)
+            .opacity(configuration.isPressed ? 0.85 : 1)
+            .animation(.snappy(duration: 0.12), value: configuration.isPressed)
+    }
+}
+
+private struct PanelControlPressStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.94 : 1)
+            .animation(.snappy(duration: 0.12), value: configuration.isPressed)
     }
 }

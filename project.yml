@@ -15,6 +15,9 @@ packages:
   WhisperKit:
     url: https://github.com/argmaxinc/WhisperKit.git
     from: "0.17.0"
+  FluidAudio:
+    url: https://github.com/FluidInference/FluidAudio.git
+    from: "0.17.7"
 
 targets:
   Murmur:
@@ -25,23 +28,27 @@ targets:
       - Sources/Shared
     dependencies:
       - package: WhisperKit
+      - package: FluidAudio
       - target: MurmurKeyboard
+        embed: true
+      - target: MurmurWidget
         embed: true
     settings:
       base:
         INFOPLIST_FILE: Sources/Murmur/Info.plist
         CODE_SIGN_ENTITLEMENTS: Sources/Murmur/Murmur.entitlements
-        PRODUCT_BUNDLE_IDENTIFIER: com.murmurkeyboard.app
+        PRODUCT_BUNDLE_IDENTIFIER: com.murmur.dictation
         TARGETED_DEVICE_FAMILY: "1"
     info:
       path: Sources/Murmur/Info.plist
       properties:
         CFBundleDisplayName: Murmur
         CFBundleIconName: AppIcon
-        CFBundleShortVersionString: "3.0"
-        CFBundleVersion: "9"
+        CFBundleShortVersionString: "3.1"
+        CFBundleVersion: "10"
+        NSSupportsLiveActivities: true
         CFBundleURLTypes:
-          - CFBundleURLName: com.murmurkeyboard.app
+          - CFBundleURLName: com.murmur.dictation
             CFBundleURLSchemes:
               - murmur
         NSMicrophoneUsageDescription: "Murmur needs microphone access to transcribe your speech on-device."
@@ -68,13 +75,13 @@ targets:
       base:
         INFOPLIST_FILE: Sources/MurmurKeyboard/Info.plist
         CODE_SIGN_ENTITLEMENTS: Sources/MurmurKeyboard/MurmurKeyboard.entitlements
-        PRODUCT_BUNDLE_IDENTIFIER: com.murmurkeyboard.app.keyboard
+        PRODUCT_BUNDLE_IDENTIFIER: com.murmur.dictation.keyboard
     info:
       path: Sources/MurmurKeyboard/Info.plist
       properties:
         CFBundleDisplayName: Murmur
-        CFBundleShortVersionString: "3.0"
-        CFBundleVersion: "9"
+        CFBundleShortVersionString: "3.1"
+        CFBundleVersion: "10"
         NSExtension:
           NSExtensionAttributes:
             IsASCIICapable: true
@@ -84,11 +91,32 @@ targets:
           NSExtensionPointIdentifier: com.apple.keyboard-service
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).KeyboardViewController
 
+  MurmurWidget:
+    type: app-extension
+    platform: iOS
+    sources:
+      - Sources/MurmurWidget
+    settings:
+      base:
+        INFOPLIST_FILE: Sources/MurmurWidget/Info.plist
+        PRODUCT_BUNDLE_IDENTIFIER: com.murmur.dictation.widget
+        TARGETED_DEVICE_FAMILY: "1"
+        SKIP_INSTALL: YES
+    info:
+      path: Sources/MurmurWidget/Info.plist
+      properties:
+        CFBundleDisplayName: Murmur
+        CFBundleShortVersionString: "3.1"
+        CFBundleVersion: "10"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+
 schemes:
   Murmur:
     build:
       targets:
         Murmur: all
         MurmurKeyboard: all
+        MurmurWidget: all
     run:
       config: Debug

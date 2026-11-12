@@ -7,7 +7,7 @@ enum SharedDefaults {
     // MARK: - App Group
 
     /// The App Group identifier shared between the main app and the keyboard extension.
-    static let appGroupID = "group.murmurkeyboard.shared"
+    static let appGroupID = "group.com.murmur.dictation"
 
     /// The shared `UserDefaults` suite backed by the App Group container.
     nonisolated(unsafe) static let suite: UserDefaults = {
@@ -66,7 +66,19 @@ enum SharedDefaults {
     private static let modelLoadingProgressKey = "modelLoadingProgress"
 
     private static let pendingTextTTL: TimeInterval = 60
-    private static let dictationSessionTTL: TimeInterval = 120
+
+    /// How long a keyboard dictation session stays valid between dictations.
+    /// Written by the app from Settings › Session duration.
+    private static let dictationSessionDurationKey = "dictationSessionDurationMinutes"
+
+    static func setDictationSessionDurationMinutes(_ minutes: Int) {
+        suite.set(max(1, minutes), forKey: dictationSessionDurationKey)
+    }
+
+    static func dictationSessionDurationMinutes() -> Int {
+        let stored = suite.integer(forKey: dictationSessionDurationKey)
+        return stored > 0 ? stored : 5
+    }
 
     // MARK: - Pending Text
 
@@ -162,7 +174,7 @@ enum SharedDefaults {
         let timestamp = suite.double(forKey: dictationSessionTimestampKey)
         if timestamp > 0 {
             let age = Date().timeIntervalSince1970 - timestamp
-            if age >= dictationSessionTTL {
+            if age >= TimeInterval(dictationSessionDurationMinutes() * 60) {
                 abandonDictationSession(reason: "Dictation timed out.")
                 clearDictationSession()
                 return nil

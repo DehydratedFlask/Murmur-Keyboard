@@ -2,11 +2,9 @@ import Foundation
 import Security
 
 /// Minimal Keychain wrapper for storing and retrieving API keys.
-/// Uses kSecClassGenericPassword with a fixed access group so the
-/// main app and keyboard extension can share credentials.
+/// Items live in the app's default access group; no shared group is used, so
+/// nothing here depends on a `keychain-access-groups` entitlement.
 enum KeychainHelper {
-
-    private static let accessGroup = "group.murmurkeyboard.shared"
 
     /// Saves a string value to the Keychain for the given service key.
     /// Overwrites any existing value for that key.
