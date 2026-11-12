@@ -494,6 +494,9 @@ struct KeyboardView: View {
 
     // MARK: - Bottom Row
 
+    /// Equal-width side keys keep the space bar exactly centred on screen.
+    private var bottomSideKeyWidth: CGFloat { 92 }
+
     private var bottomRow: some View {
         HStack(spacing: keySpacing) {
             numberToggleKey
@@ -632,8 +635,8 @@ struct KeyboardView: View {
             viewModel.toggleNumbers()
         } label: {
             Text(viewModel.showNumbers || viewModel.showSymbols ? "ABC" : "123")
-                .font(.system(size: 15, weight: .medium))
-                .frame(width: 56, height: keyHeight)
+                .font(.system(size: 16, weight: .medium))
+                .frame(width: bottomSideKeyWidth, height: keyHeight)
                 .background { keySurface(isAction: true) }
         }
         .buttonStyle(IOSKeyboardPressStyle(isDarkMode: viewModel.isDarkMode))
@@ -647,7 +650,7 @@ struct KeyboardView: View {
         } label: {
             Text(viewModel.showSymbols ? "123" : "#+=")
                 .font(.system(size: 15, weight: .medium))
-                .frame(width: 42, height: keyHeight)
+                .frame(width: 46, height: keyHeight)
                 .background { keySurface(isAction: true) }
         }
         .buttonStyle(IOSKeyboardPressStyle(isDarkMode: viewModel.isDarkMode))
@@ -674,7 +677,7 @@ struct KeyboardView: View {
                         .font(.system(size: 15.5, weight: .medium))
                 }
             }
-            .frame(width: 92, height: keyHeight)
+            .frame(width: bottomSideKeyWidth, height: keyHeight)
             .background { keySurface(isAction: true, isProminent: returnKeyIsProminent) }
         }
         .buttonStyle(IOSKeyboardPressStyle(isDarkMode: viewModel.isDarkMode))
@@ -797,16 +800,22 @@ struct KeyboardView: View {
             )
     }
 
-    /// The keyboard itself is glass: one translucent surface over whatever app
-    /// you're typing in, with no border or second tone anywhere.
+    /// On iOS 26 the system already draws the keyboard's Liquid Glass plate, so
+    /// we paint nothing there and let Apple's surface (and its edge) be the
+    /// only one on screen. Earlier systems get a translucent material.
+    @ViewBuilder
     private var keyboardBackdrop: some View {
-        Rectangle()
-            .fill(.ultraThinMaterial)
-            .overlay(
-                viewModel.isDarkMode
-                    ? Color.black.opacity(0.42)
-                    : Color.white.opacity(0.28)
-            )
+        if #available(iOS 26.0, *) {
+            Color.clear
+        } else {
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .overlay(
+                    viewModel.isDarkMode
+                        ? Color.black.opacity(0.42)
+                        : Color.white.opacity(0.20)
+                )
+        }
     }
 
     // MARK: - Palette
