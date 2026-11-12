@@ -21,6 +21,26 @@ private let keyboardRightEdgeKeys: Set<String> = [
     "P", "L", "M", "0", "\"", "=", "'",
 ]
 
+/// Shared coordinate space so a pressed key can publish where its popup goes.
+private let keyboardCoordinateSpace = "murmurKeyboardSpace"
+
+private struct PressedKeyInfo: Equatable {
+    let text: String
+    let center: CGPoint
+}
+
+/// Carries the pressed key up to the keyboard root, which draws the popup above
+/// every row so nothing can clip or cover it.
+private struct PressedKeyInfoKey: PreferenceKey {
+    static var defaultValue: PressedKeyInfo? { nil }
+
+    static func reduce(value: inout PressedKeyInfo?, nextValue: () -> PressedKeyInfo?) {
+        if let next = nextValue() {
+            value = next
+        }
+    }
+}
+
 /// The main SwiftUI keyboard view — native iOS QWERTY layout with a
 /// Murmur dictation button integrated into the predictive-text row.
 struct KeyboardView: View {
@@ -79,6 +99,17 @@ struct KeyboardView: View {
         .background { keyboardBackdrop }
         // One flat keyboard surface: no inset card, so there is no seam between
         // the keys and the area around them.
+        .coordinateSpace(name: keyboardCoordinateSpace)
+        .overlayPreferenceValue(PressedKeyInfoKey.self) { info in
+            if let info {
+                KeyPopup(text: info.text, isDarkMode: viewModel.isDarkMode)
+                    .position(
+                        x: info.center.x,
+                        y: info.center.y - keyHeight / 2 - 26
+                    )
+                    .allowsHitTesting(false)
+            }
+        }
 
         .animation(.snappy(duration: 0.18), value: viewModel.showNumbers)
         .animation(.snappy(duration: 0.18), value: viewModel.showSymbols)
@@ -1021,13 +1052,18 @@ private struct AlternateInputKey<Label: View>: View {
                             endPress(commit: !moved)
                         }
                 )
-                .overlay(alignment: .top) {
-                    // No transition, no animation: the popup appears in the same
-                    // frame the finger lands, like the system keyboard.
-                    if isPressed, !showsAlternatives {
-                        KeyPopup(text: displayText, isDarkMode: isDarkMode)
-                            .offset(y: -42)
-                            .allowsHitTesting(false)
+                .background {
+                    GeometryReader { proxy in
+                        let frame = proxy.frame(in: .named(keyboardCoordinateSpace))
+                        Color.clear.preference(
+                            key: PressedKeyInfoKey.self,
+                            value: isPressed && !showsAlternatives
+                                ? PressedKeyInfo(
+                                    text: displayText,
+                                    center: CGPoint(x: frame.midX, y: frame.midY)
+                                )
+                                : nil
+                        )
                     }
                 }
 
