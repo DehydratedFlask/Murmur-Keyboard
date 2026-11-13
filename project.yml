@@ -37,7 +37,7 @@ targets:
       base:
         INFOPLIST_FILE: Sources/Murmur/Info.plist
         CODE_SIGN_ENTITLEMENTS: Sources/Murmur/Murmur.entitlements
-        PRODUCT_BUNDLE_IDENTIFIER: com.murmur.dictation
+        PRODUCT_BUNDLE_IDENTIFIER: com.murmurkeyboard.app
         TARGETED_DEVICE_FAMILY: "1"
     info:
       path: Sources/Murmur/Info.plist
@@ -49,7 +49,7 @@ targets:
         ITSAppUsesNonExemptEncryption: false
         NSSupportsLiveActivities: true
         CFBundleURLTypes:
-          - CFBundleURLName: com.murmur.dictation
+          - CFBundleURLName: com.murmurkeyboard.app
             CFBundleURLSchemes:
               - murmur
         NSMicrophoneUsageDescription: "Murmur needs microphone access to transcribe your speech on-device."
@@ -76,7 +76,7 @@ targets:
       base:
         INFOPLIST_FILE: Sources/MurmurKeyboard/Info.plist
         CODE_SIGN_ENTITLEMENTS: Sources/MurmurKeyboard/MurmurKeyboard.entitlements
-        PRODUCT_BUNDLE_IDENTIFIER: com.murmur.dictation.keyboard
+        PRODUCT_BUNDLE_IDENTIFIER: com.murmurkeyboard.app.keyboard
     info:
       path: Sources/MurmurKeyboard/Info.plist
       properties:
@@ -100,7 +100,7 @@ targets:
     settings:
       base:
         INFOPLIST_FILE: Sources/MurmurWidget/Info.plist
-        PRODUCT_BUNDLE_IDENTIFIER: com.murmur.dictation.widget
+        PRODUCT_BUNDLE_IDENTIFIER: com.murmurkeyboard.app.widget
         TARGETED_DEVICE_FAMILY: "1"
         SKIP_INSTALL: YES
     info:

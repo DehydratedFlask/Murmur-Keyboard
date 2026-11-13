@@ -1,86 +1,66 @@
 # App Store submission
 
-This build is prepared for submission (3.1, build 11, export compliance set),
-but it cannot be uploaded from the app that produced it: that environment only
-issues development-signed install links and has no App Store Connect access or
-distribution profile.
+Status: ready to archive as 3.1 (build 11). This environment cannot upload — it
+only issues development-signed install links and has no App Store Connect
+access or distribution profile — so the upload happens in Xcode on your Mac.
 
-Before uploading, decide one thing: the bundle identifier.
+## Identifiers
 
-## The live App Store record
+Switched back to the live App Store record so an upload updates "Murmur
+Keyboard - AI Powered" (App Store ID 6761157714) instead of creating a new app:
 
-- Name: **Murmur Keyboard - AI Powered** (subtitle "Powerful Private AI Dictation")
-- Seller: John Wang — [developer page](https://apps.apple.com/us/developer/john-wang/id1888061643)
-- App Store ID: `6761157714`
-- Bundle identifier on the record: **`com.murmurkeyboard.app`**
-- Released version: **2.3** (3 April 2026)
-- https://apps.apple.com/us/app/murmur-keyboard-ai-powered/id6761157714
-
-This project now builds **`com.murmur.dictation`** (app), `com.murmur.dictation.keyboard`
-and `com.murmur.dictation.widget`, with App Group `group.com.murmur.dictation`.
-The identifier was changed earlier because the development signing service
-reported `com.murmurkeyboard.app` as registered to another app.
-
-**Consequence:** uploading this build as-is creates a *new* App Store record.
-It does not update "Murmur Keyboard - AI Powered".
-
-## Option A — update the existing app (recommended for an update)
-
-Set the identifiers back so the upload matches the live record:
-
-| Target | Identifier |
+| Target | Bundle identifier |
 | --- | --- |
 | Murmur | `com.murmurkeyboard.app` |
 | MurmurKeyboard | `com.murmurkeyboard.app.keyboard` |
 | MurmurWidget | `com.murmurkeyboard.app.widget` |
+| App Group (all three) | `group.com.murmur.dictation` |
 
-Notes:
+Things this changes:
 
-- Both extension identifiers must stay prefixed by the app's identifier.
-- Use one App Group for app, keyboard and widget. If the group the 2.3 release
-  used is still registered on the account, prefer it so existing users keep
-  their transcripts; otherwise register the one you choose under
-  Certificates, Identifiers & Profiles → Identifiers → App Groups.
-- The keyboard extension's identifier shipped in 2.3 may differ from the one
-  above. Check the existing provisioning profile before the first upload; if it
-  differs, keep the shipped one to avoid leaving an orphaned keyboard in
-  Settings after the update.
-
-Trade-off: development install links are issued for `com.murmur.dictation`, so
-switching back means those stop working.
-
-## Option B — ship as a new app
-
-Keep `com.murmur.dictation`, create a new App Store Connect record, and both
-apps coexist. The 2.3 record stays on the store untouched.
+- **Development install links no longer work.** The signing service reports
+  `com.murmurkeyboard.app` as belonging to the App Store record, so it will not
+  issue a development build for it. Test through TestFlight instead.
+- **The extension identifiers must stay prefixed by the app identifier**, which
+  they are. Check the identifier the 2.3 build actually shipped: if it differed
+  from `com.murmurkeyboard.app.keyboard`, keep the shipped one so the update
+  does not leave an orphaned keyboard in Settings.
+- **The App Group is unchanged** (`group.com.murmur.dictation`, already
+  registered on the account). Users updating from 2.3 keep a working app and
+  keyboard, but transcripts and snippets stored under the 2.3 group are not
+  migrated. To carry them over, change the group in both entitlement files and
+  in `SharedDefaults.appGroupID` to the one 2.3 used.
 
 ## Uploading
 
-1. In Xcode, set the team to John Wang's team, choose "Any iOS Device (arm64)"
-   and archive with Product → Archive.
-2. In the Organizer, Validate App, then Distribute App → App Store Connect.
-3. In App Store Connect → My Apps → Murmur Keyboard - AI Powered → **+ Version
-   or Platform** → iOS 3.1, select the uploaded build.
-4. Paste `RELEASE_NOTES_V3.1.md` into "What's New".
-5. Submit for review.
+1. Open `Murmur.xcodeproj` in Xcode, select the Murmur target → Signing &
+   Capabilities, choose John Wang's team, and let Xcode create the distribution
+   profile. Repeat for MurmurKeyboard and MurmurWidget if signing is reported
+   there.
+2. Choose "Any iOS Device (arm64)" and Product → Archive.
+3. In the Organizer: Validate App, then Distribute App → App Store Connect →
+   Upload.
+4. App Store Connect → My Apps → Murmur Keyboard - AI Powered → **+ Version or
+   Platform** → iOS 3.1, and select the uploaded build.
+5. Paste `RELEASE_NOTES_V3.1.md` into "What's New".
+6. Submit for review.
 
 ## Submission checklist
 
-- [x] Version 3.1, build 11 (bumped for this submission)
+- [x] Version 3.1, build 11 (bumped; raise it again if Apple reports a duplicate)
 - [x] `ITSAppUsesNonExemptEncryption` = false (standard HTTPS only)
 - [x] Privacy manifest (`PrivacyInfo.xcprivacy`) in app and keyboard
 - [x] Microphone usage description
-- [x] App Group entitlement shared by app, keyboard and widget
+- [x] App Group entitlement on app, keyboard and widget
 - [x] Keyboard extension declares `RequestsOpenAccess`
-- [ ] Screenshots for the 6.9" iPhone (1320 × 2868) — `screenshots/appstore-*.png`
-      need checking against the current size requirements
-- [ ] Privacy answers: the app stores transcripts on device only; enable cloud
-      dictation only if you want it declared
+- [x] Bundle identifiers match the live record
+- [ ] Screenshots for the 6.9" iPhone (1320 × 2868) — recheck
+      `screenshots/appstore-*.png` against the current size requirements
+- [ ] Privacy answers: transcripts stay on device unless cloud dictation is on
 - [ ] Review notes: the keyboard records through the container app (iOS forbids
-      audio capture in an extension), and Full Access is needed for the handoff
+      audio capture inside an extension) and needs Full Access for the handoff
 
 ## Known review risk
 
-App Review sometimes rejects keyboards that require Full Access. The notes above
-explain why it is needed here (app↔keyboard handoff and shared storage), and the
-keyboard still types when it is off.
+App Review sometimes pushes back on keyboards that require Full Access. The notes
+above explain why it is needed here, and the keyboard still types with it off.
