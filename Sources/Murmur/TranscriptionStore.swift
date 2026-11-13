@@ -310,7 +310,7 @@ enum MurmurPreferences {
     }
 
     static var livePreviewEnabled: Bool {
-        get { UserDefaults.standard.object(forKey: "livePreviewEnabled") == nil || UserDefaults.standard.bool(forKey: "livePreviewEnabled") }
+        get { UserDefaults.standard.bool(forKey: "livePreviewEnabled") }
         set { UserDefaults.standard.set(newValue, forKey: "livePreviewEnabled") }
     }
 

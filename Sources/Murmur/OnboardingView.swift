@@ -1,369 +1,226 @@
 import SwiftUI
+import UIKit
 
 private let onboardingAccent = Color(red: 0.39, green: 0.28, blue: 0.95)
-private let onboardingAccentSecondary = Color(red: 0.53, green: 0.44, blue: 1.0)
 
 struct OnboardingView: View {
     @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
-    @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var recorder: AudioRecorder
+    @EnvironmentObject private var transcription: TranscriptionService
     @Environment(\.openURL) private var openURL
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    @State private var currentPage = 0
-
-    private let pages = OnboardingPage.allCases
+    @State private var isRequestingPermission = false
+    @State private var keyboardWasOpened = false
+    @State private var fullAccessWasGranted = false
+    @State private var keyboardTestText = ""
+    @State private var settingsError: String?
 
     var body: some View {
-        ZStack {
-            LinearGradient(
-                colors: colorScheme == .dark
-                    ? [Color(red: 0.08, green: 0.08, blue: 0.10), Color(red: 0.11, green: 0.10, blue: 0.15), Color(red: 0.08, green: 0.08, blue: 0.10)]
-                    : [Color(.systemBackground), onboardingAccent.opacity(0.08), Color(.secondarySystemBackground)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .ignoresSafeArea()
-
-            VStack(spacing: 0) {
-                topBar
-
-                TabView(selection: $currentPage) {
-                    ForEach(pages) { page in
-                        pageView(for: page)
-                            .tag(page.rawValue)
-                            .padding(.horizontal, 24)
-                            .padding(.bottom, 24)
+        NavigationStack {
+            Form {
+                introduction
+                microphoneSetup
+                modelSetup
+                keyboardSetup
+            }
+            .navigationTitle("Welcome to Murmur")
+            .navigationBarTitleDisplayMode(.inline)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                VStack(spacing: 8) {
+                    Button(action: completeOnboarding) {
+                        Text("Continue to Murmur")
+                            .font(.headline)
+                            .frame(maxWidth: .infinity, minHeight: 44)
                     }
-                }
-                .tabViewStyle(.page(indexDisplayMode: .always))
-                .indexViewStyle(.page(backgroundDisplayMode: .interactive))
-                .animation(reduceMotion ? .linear(duration: 0.01) : .spring(response: 0.4, dampingFraction: 0.88), value: currentPage)
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                        .accessibilityHint("Opens the app. You can finish setup later.")
 
-                bottomCTA
+                    Text("You can finish any of these steps later.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+                .background(.bar)
             }
         }
         .tint(onboardingAccent)
-    }
-
-    private var topBar: some View {
-        HStack {
-            Spacer()
-
-            if currentPage < pages.count - 1 {
-                Button("Skip") {
-                    completeOnboarding()
-                }
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(Color(.systemBackground).opacity(colorScheme == .dark ? 0.52 : 0.72), in: Capsule())
-                .overlay(Capsule().stroke(Color.primary.opacity(colorScheme == .dark ? 0.14 : 0.08), lineWidth: 1))
-            }
+        .onAppear(perform: refreshSetupStatus)
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { refreshSetupStatus() }
         }
-        .padding(.horizontal, 24)
-        .padding(.top, 16)
     }
 
-    @ViewBuilder
-    private func pageView(for page: OnboardingPage) -> some View {
-        ScrollView(showsIndicators: false) {
-            VStack(spacing: 20) {
-                Spacer(minLength: page.hasCard ? 8 : 24)
+    private var introduction: some View {
+        Section {
+            VStack(alignment: .leading, spacing: 12) {
+                Image(systemName: "waveform")
+                    .font(.largeTitle)
+                    .foregroundStyle(onboardingAccent)
+                    .accessibilityHidden(true)
 
-                pageHero(icon: page.icon, compact: page.hasCard)
+                Text("Your voice.\nRoom to think.")
+                    .font(.largeTitle.bold())
+                    .accessibilityAddTraits(.isHeader)
+                    .fixedSize(horizontal: false, vertical: true)
 
-                VStack(spacing: 10) {
-                    if page == .welcome {
-                        Text("Murmur")
-                            .font(.system(size: 38, weight: .bold, design: .rounded))
-                            .foregroundStyle(.primary)
+                Text("Record a thought, turn it into text, and use it where you need it. Start with the essentials below.")
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.vertical, 8)
+        }
+    }
 
-                        Text(page.title)
-                            .font(.system(.title3, design: .rounded).weight(.semibold))
-                            .foregroundStyle(.primary)
-                            .multilineTextAlignment(.center)
-                    } else {
-                        Text(page.title)
-                            .font(.system(size: 30, weight: .bold, design: .rounded))
-                            .foregroundStyle(.primary)
-                            .multilineTextAlignment(.center)
+    private var microphoneSetup: some View {
+        Section {
+            if recorder.hasPermission {
+                Label("Microphone allowed", systemImage: "checkmark.circle.fill")
+            } else if recorder.permissionDenied {
+                Label("Microphone access is off", systemImage: "mic.slash")
+                Text("Allow Microphone in iOS Settings to record your voice.")
+                    .foregroundStyle(.secondary)
+                Button("Open Microphone Settings", action: openSettings)
+                    .frame(minHeight: 44)
+            } else {
+                Text("Murmur needs the microphone to record. It asks for access only when you choose to allow it.")
+                    .foregroundStyle(.secondary)
+                Button {
+                    isRequestingPermission = true
+                    Task {
+                        await recorder.requestPermission()
+                        isRequestingPermission = false
                     }
-
-                    Text(page.subtitle)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .lineSpacing(3)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(.horizontal, 8)
+                } label: {
+                    HStack {
+                        Text(isRequestingPermission ? "Requesting access…" : "Allow Microphone")
+                        if isRequestingPermission {
+                            ProgressView()
+                                .accessibilityHidden(true)
+                        }
+                    }
+                    .frame(minHeight: 44)
                 }
-
-                if page == .howItWorks {
-                    howItWorksCard
-                }
-
-                if page == .handoff {
-                    handoffCard
-                }
-
-                if page == .enableKeyboard {
-                    setupCard
-                }
-
-                Spacer(minLength: 16)
+                .disabled(isRequestingPermission)
             }
-            .frame(maxWidth: .infinity)
+        } header: {
+            Text("Record your voice")
+        } footer: {
+            Text("Recording happens in the Murmur app. iOS keyboards cannot use the microphone directly.")
         }
     }
 
-    private func pageHero(icon: String, compact: Bool = false) -> some View {
-        let size: CGFloat = compact ? 120 : 152
-        let iconSize: CGFloat = compact ? 48 : 60
-        return ZStack {
-            Circle()
-                .fill(
-                    LinearGradient(
-                        colors: colorScheme == .dark
-                            ? [onboardingAccent.opacity(0.16), onboardingAccentSecondary.opacity(0.08)]
-                            : [onboardingAccent.opacity(0.18), onboardingAccentSecondary.opacity(0.10)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-                .frame(width: size, height: size)
-
-            Circle()
-                .strokeBorder(colorScheme == .dark ? Color.white.opacity(0.16) : Color.white.opacity(0.7), lineWidth: 1)
-                .frame(width: size, height: size)
-
-            Image(systemName: icon)
-                .font(.system(size: iconSize, weight: .medium))
-                .foregroundStyle(
-                    LinearGradient(
-                        colors: [onboardingAccentSecondary, onboardingAccent],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
+    private var modelSetup: some View {
+        Section {
+            switch transcription.modelState {
+            case .unloaded:
+                Text("Download a speech model once. Once it is ready, your recordings can be transcribed on this device, offline.")
+                    .foregroundStyle(.secondary)
+                Button("Prepare Offline Transcription", action: prepareModel)
+                    .frame(minHeight: 44)
+            case .loading:
+                ProgressView {
+                    Text("Preparing offline transcription")
+                }
+                Text(transcription.loadingProgress.isEmpty
+                     ? "Getting the speech model ready…"
+                     : transcription.loadingProgress)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            case .loaded:
+                Label("Offline transcription ready", systemImage: "checkmark.circle.fill")
+                Text("The speech model is loaded. You’re ready to turn recordings into text.")
+                    .foregroundStyle(.secondary)
+            case .error(let message):
+                Label("Couldn’t prepare transcription", systemImage: "exclamationmark.triangle")
+                Text(message)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Button("Try Model Setup Again", action: prepareModel)
+                    .frame(minHeight: 44)
+            }
+        } header: {
+            Text("Prepare your speech model")
+        } footer: {
+            Text("First-time setup needs an internet connection. You can continue and record while the model prepares; transcription waits until it is ready.")
         }
-        .shadow(color: onboardingAccent.opacity(colorScheme == .dark ? 0.10 : 0.16), radius: 20, y: 10)
     }
 
-    private var howItWorksCard: some View {
-        VStack(spacing: 16) {
-            OnboardingStepView(icon: "mic.fill", title: "Tap to speak")
-            OnboardingStepView(icon: "waveform", title: "Murmur transcribes on-device")
-            OnboardingStepView(icon: "doc.on.clipboard", title: "Text appears instantly")
-        }
-        .padding(22)
-        .frame(maxWidth: .infinity)
-        .background(Color(.secondarySystemBackground).opacity(colorScheme == .dark ? 0.92 : 1.0), in: RoundedRectangle(cornerRadius: 28, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 28, style: .continuous)
-                .stroke(Color.primary.opacity(colorScheme == .dark ? 0.10 : 0.06), lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(colorScheme == .dark ? 0.22 : 0.05), radius: 18, y: 8)
-    }
-
-    private var handoffCard: some View {
-        VStack(spacing: 16) {
-            OnboardingStepView(
-                icon: "hand.draw.fill",
-                title: "Swipe right from the left edge"
-            )
-            OnboardingStepView(
-                icon: "waveform",
-                title: "Murmur keeps listening in the background"
-            )
-            OnboardingStepView(
-                icon: "checkmark.circle.fill",
-                title: "Tap the checkmark on Murmur’s keyboard to paste"
-            )
-        }
-        .padding(22)
-        .frame(maxWidth: .infinity)
-        .background(Color(.secondarySystemBackground).opacity(colorScheme == .dark ? 0.92 : 1.0), in: RoundedRectangle(cornerRadius: 28, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 28, style: .continuous)
-                .stroke(onboardingAccent.opacity(colorScheme == .dark ? 0.20 : 0.12), lineWidth: 1)
-        )
-        .shadow(color: onboardingAccent.opacity(colorScheme == .dark ? 0.12 : 0.08), radius: 20, y: 10)
-    }
-
-    private var setupCard: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Label("Use Murmur in any app — Messages, Notes, Mail, and more.", systemImage: "apps.iphone")
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(.primary)
-
-            Label("Open Settings and enable the Murmur keyboard.", systemImage: "gearshape.fill")
-                .font(.subheadline)
+    private var keyboardSetup: some View {
+        Section {
+            Text("Add the keyboard to send your words into other apps. This step is optional.")
                 .foregroundStyle(.secondary)
 
-            Label("Switch to Murmur whenever you want private voice-to-text.", systemImage: "hand.tap.fill")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 12) {
+                Text("1. Open iOS Settings → General → Keyboard → Keyboards → Add New Keyboard, then choose Murmur.")
+                Text("2. Tap Murmur and turn on Allow Full Access so the keyboard can exchange dictation with the app.")
+                Text("3. Tap the field below, then touch and hold the globe key to choose Murmur.")
+            }
+            .font(.subheadline)
+            .fixedSize(horizontal: false, vertical: true)
+
+            Button("Open iOS Settings", action: openSettings)
+                .frame(minHeight: 44)
+
+            if let settingsError {
+                Text(settingsError)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+
+            TextField("Try the Murmur keyboard here", text: $keyboardTestText, axis: .vertical)
+                .lineLimit(2...4)
+                .accessibilityLabel("Keyboard test field")
+                .accessibilityHint("Touch and hold the globe key on your keyboard, then select Murmur.")
+
+            DisclosureGroup("Last keyboard report") {
+                Label(keyboardWasOpened ? "Murmur has opened before" : "No keyboard opening reported yet",
+                      systemImage: keyboardWasOpened ? "keyboard" : "keyboard.badge.ellipsis")
+                Label(fullAccessWasGranted ? "Full Access last reported on" : "Full Access not reported on",
+                      systemImage: fullAccessWasGranted ? "checkmark.circle" : "info.circle")
+                Text("These are saved reports from the keyboard. They do not confirm that it is currently enabled or that Full Access is still on.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Button("Refresh Keyboard Report", action: refreshSetupStatus)
+                    .frame(minHeight: 44)
+            }
+        } header: {
+            Text("Use Murmur in other apps")
+        } footer: {
+            Text("You can also record in Murmur and copy your finished text. Switch between apps using the app switcher or iOS’s return-to-app control when available.")
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(22)
-        .background(Color(.secondarySystemBackground).opacity(colorScheme == .dark ? 0.92 : 1.0), in: RoundedRectangle(cornerRadius: 28, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 28, style: .continuous)
-                .stroke(onboardingAccent.opacity(colorScheme == .dark ? 0.20 : 0.12), lineWidth: 1)
-        )
-        .shadow(color: onboardingAccent.opacity(colorScheme == .dark ? 0.12 : 0.08), radius: 20, y: 10)
     }
 
-    private var bottomCTA: some View {
-        VStack(spacing: 14) {
-            Button {
-                primaryAction()
-            } label: {
-                Text(currentPage == pages.count - 1 ? "Set Up" : "Continue")
-                    .font(.headline)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 18)
-                    .background(
-                        LinearGradient(
-                            colors: colorScheme == .dark
-                                ? [onboardingAccentSecondary.opacity(0.92), onboardingAccent.opacity(0.90)]
-                                : [onboardingAccentSecondary, onboardingAccent],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        in: RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    )
-                    .foregroundStyle(.white)
-                    .shadow(color: onboardingAccent.opacity(0.24), radius: 16, y: 8)
-            }
-            .buttonStyle(.plain)
-
-            if currentPage == pages.count - 1 {
-                Button("Skip for now") {
-                    completeOnboarding()
-                }
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.secondary)
-            }
-        }
-        .padding(.horizontal, 24)
-        .padding(.top, 18)
-        .padding(.bottom, 34)
-        .background(
-            (colorScheme == .dark
-                ? Color(.systemBackground).opacity(0.88)
-                : Color(.systemBackground).opacity(0.96))
-            .blur(radius: 10)
-        )
+    private func prepareModel() {
+        // Keep the shared service working if the user continues into the app.
+        Task { await transcription.loadModel() }
     }
 
-    private func primaryAction() {
-        if currentPage == pages.count - 1 {
-            // Complete onboarding first so the main UI appears cleanly.
-            // The main view's keyboard setup banner guides the user to Settings
-            // without the jarring jump-away that openSettingsURLString causes.
-            completeOnboarding()
-        } else {
-            withAnimation(reduceMotion ? .linear(duration: 0.01) : .spring(response: 0.42, dampingFraction: 0.86)) {
-                currentPage += 1
-            }
+    private func refreshSetupStatus() {
+        recorder.checkPermission()
+        keyboardWasOpened = SharedDefaults.isKeyboardActive()
+        fullAccessWasGranted = SharedDefaults.isFullAccessGranted()
+    }
+
+    private func openSettings() {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        openURL(url) { accepted in
+            settingsError = accepted ? nil : "Open the Settings app, then follow the steps above."
         }
     }
 
     private func completeOnboarding() {
-        withAnimation(reduceMotion ? .linear(duration: 0.01) : .easeInOut(duration: 0.35)) {
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
             hasCompletedOnboarding = true
         }
     }
 }
 
-private struct OnboardingStepView: View {
-    @Environment(\.colorScheme) private var colorScheme
-    let icon: String
-    let title: String
-
-    var body: some View {
-        HStack(spacing: 16) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(onboardingAccent.opacity(colorScheme == .dark ? 0.18 : 0.12))
-                    .frame(width: 54, height: 54)
-
-                Image(systemName: icon)
-                    .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(onboardingAccent)
-            }
-
-            Text(title)
-                .font(.headline)
-                .foregroundStyle(.primary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(16)
-        .background(Color(.tertiarySystemBackground).opacity(0.95), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-    }
-}
-
-private enum OnboardingPage: Int, CaseIterable, Identifiable {
-    case welcome
-    case howItWorks
-    case handoff
-    case privacy
-    case enableKeyboard
-
-    var id: Int { rawValue }
-
-    var icon: String {
-        switch self {
-        case .welcome:
-            return "waveform"
-        case .howItWorks:
-            return "sparkles"
-        case .handoff:
-            return "hand.draw.fill"
-        case .privacy:
-            return "lock.shield.fill"
-        case .enableKeyboard:
-            return "keyboard.badge.ellipsis"
-        }
-    }
-
-    var title: String {
-        switch self {
-        case .welcome:
-            return "Your voice, your words, your device."
-        case .howItWorks:
-            return "How It Works"
-        case .handoff:
-            return "Swipe Back to Your App"
-        case .privacy:
-            return "100% Private"
-        case .enableKeyboard:
-            return "Set Up Murmur Keyboard"
-        }
-    }
-
-    var subtitle: String {
-        switch self {
-        case .welcome:
-            return "On-device speech-to-text that never leaves your phone."
-        case .howItWorks:
-            return "Speak naturally, let Murmur handle the transcription, and watch your text appear instantly."
-        case .handoff:
-            return "iOS only lets the Murmur app — not the keyboard — use the microphone. So Murmur opens for a moment: say what you need, then swipe back and finish."
-        case .privacy:
-            return "No internet required. No accounts. No data collection. Everything stays on your iPhone."
-        case .enableKeyboard:
-            return "Use Murmur in any app — Messages, Notes, Mail, and more."
-        }
-    }
-
-    var hasCard: Bool {
-        self == .howItWorks || self == .handoff || self == .enableKeyboard
-    }
-}
-
 #Preview {
     OnboardingView()
+        .environmentObject(AudioRecorder())
+        .environmentObject(TranscriptionService())
 }

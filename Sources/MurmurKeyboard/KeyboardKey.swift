@@ -2,7 +2,7 @@ import SwiftUI
 import UIKit
 
 /// Visual description of a single key cap.
-struct KeyboardKeyStyle {
+struct KeyboardKeyStyle: Equatable {
     var title: String = ""
     var symbolName: String?
     var font: UIFont = .systemFont(ofSize: 24, weight: .light)
@@ -28,7 +28,7 @@ struct KeyboardKeyStyle {
 /// or when the view rebuilds between touch-down and touch-up. Apple's keyboard
 /// answers every touch, so Murmur's keys do the same — a plain `UIView` that
 /// tracks its own touches, shows the character popup and the accent palette, and
-/// inserts on lift, exactly like the system keyboard.
+/// inserts on touch-down while retaining cancellation and accent replacement.
 @MainActor
 final class MurmurKeyCapView: UIView {
 
@@ -40,11 +40,11 @@ final class MurmurKeyCapView: UIView {
     var onTouchEnd: (() -> Void)?
     /// Fired on a completed tap for keys that do not insert text.
     var onTap: (() -> Void)?
-    /// Fired on a completed tap (or accent choice) with the text to insert.
-    var onInsert: ((String) -> Void)?
+    /// Fired on touch-down (or accent choice) with this press's insertion token.
+    var onInsert: ((String, UUID) -> Void)?
     /// Fired when the accent palette takes over, so the character already typed
     /// on touch-down can be taken back.
-    var onRetract: (() -> Void)?
+    var onRetract: ((UUID) -> Bool)?
     /// Fired when the accent palette selection moves.
     var onSelectionChange: (() -> Void)?
 
@@ -57,6 +57,7 @@ final class MurmurKeyCapView: UIView {
     // MARK: - State
 
     private var style = KeyboardKeyStyle()
+    private var hasAppliedStyle = false
     private weak var activeTouch: UITouch?
     private var touchOrigin: CGPoint = .zero
     private var isTrackingTouch = false
@@ -64,6 +65,8 @@ final class MurmurKeyCapView: UIView {
     private var isHighlighted = false
     /// True once this press has already typed its character on touch-down.
     private var hasCommittedPress = false
+    private var pressToken = UUID()
+    private var pressStyle: KeyboardKeyStyle?
 
     private var popupView: KeyPopupView?
     private var paletteView: KeyPaletteView?
@@ -102,6 +105,12 @@ final class MurmurKeyCapView: UIView {
     // MARK: - Configuration
 
     func apply(_ style: KeyboardKeyStyle) {
+        KeyboardPerformance.measure("KeyViewApply") { applyChangedStyle(style) }
+    }
+
+    private func applyChangedStyle(_ style: KeyboardKeyStyle) {
+        guard !hasAppliedStyle || self.style != style else { return }
+        hasAppliedStyle = true
         self.style = style
 
         label.text = style.title
@@ -160,15 +169,9 @@ final class MurmurKeyCapView: UIView {
     override func didMoveToWindow() {
         super.didMoveToWindow()
         if window == nil {
+            // End repeat-delete and every other press-owned action as well.
+            finishTouch()
             dismissOverlays()
-            // Never leave a key stuck in a "still pressed" state after the view
-            // has been off screen: a stuck key would ignore every later touch.
-            paletteTask?.cancel()
-            paletteTask = nil
-            activeTouch = nil
-            isTrackingTouch = false
-            isCancelled = false
-            setHighlighted(false)
         }
     }
 
@@ -176,7 +179,7 @@ final class MurmurKeyCapView: UIView {
     override func accessibilityActivate() -> Bool {
         guard style.isEnabled else { return false }
         if let insertText = style.insertText {
-            onInsert?(insertText)
+            onInsert?(insertText, UUID())
         } else if let onTap {
             onTap()
         } else {
@@ -190,16 +193,28 @@ final class MurmurKeyCapView: UIView {
     // MARK: - Touches
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        KeyboardPerformance.measure("TouchDelivery") { beginTouch(touches, with: event) }
+    }
+
+    private func beginTouch(_ touches: Set<UITouch>, with event: UIEvent?) {
         guard style.isEnabled, let touch = touches.first else { return }
 
         // A press whose end never arrived must not lock this key out forever.
         // If nothing is on the screen any more, clear the stale state and treat
         // this as a fresh press.
         if isTrackingTouch {
-            guard event?.allTouches?.isEmpty != false else { return }
+            // The new touch is already in allTouches, so testing whether the
+            // event is empty can never recover a lost touch-up. Check the old
+            // tracked touch itself, including a deallocated weak reference.
+            if let activeTouch,
+               activeTouch.phase == .began || activeTouch.phase == .moved || activeTouch.phase == .stationary {
+                if event?.allTouches?.contains(activeTouch) == true { return }
+            }
             finishTouch()
         }
 
+        pressToken = UUID()
+        pressStyle = style
         activeTouch = touch
         isTrackingTouch = true
         isCancelled = false
@@ -214,7 +229,7 @@ final class MurmurKeyCapView: UIView {
         // thread — dropped the character. The character is typed the moment the
         // finger lands; holding for an accent takes it back again below.
         if let insertText = style.insertText {
-            onInsert?(insertText)
+            onInsert?(insertText, pressToken)
             hasCommittedPress = true
         }
 
@@ -256,7 +271,7 @@ final class MurmurKeyCapView: UIView {
         dismissOverlays()
         if hasCommittedPress {
             hasCommittedPress = false
-            onRetract?()
+            _ = onRetract?(pressToken)
         }
         finishTouch()
     }
@@ -268,8 +283,9 @@ final class MurmurKeyCapView: UIView {
         else { return }
 
         if paletteView != nil {
-            if selectedAlternate >= 0, selectedAlternate < style.alternatives.count {
-                onInsert?(style.alternatives[selectedAlternate])
+            let alternatives = pressStyle?.alternatives ?? []
+            if selectedAlternate >= 0, selectedAlternate < alternatives.count {
+                onInsert?(alternatives[selectedAlternate], pressToken)
             }
         } else if style.insertText == nil, !isCancelled {
             // Mode keys (shift, 123, return) act on release, unless the finger
@@ -281,7 +297,7 @@ final class MurmurKeyCapView: UIView {
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
-        guard isTrackingTouch else { return }
+        guard isTrackingTouch, touches.contains(where: { $0 === activeTouch }) else { return }
 
         // The character is already typed; a system cancel (its own gestures
         // taking over, the host closing the field) simply ends the press.
@@ -294,6 +310,7 @@ final class MurmurKeyCapView: UIView {
         isTrackingTouch = false
         activeTouch = nil
         hasCommittedPress = false
+        pressStyle = nil
         paletteTask?.cancel()
         paletteTask = nil
         setHighlighted(false)
@@ -345,15 +362,18 @@ final class MurmurKeyCapView: UIView {
         // the accent the user picks replaces it rather than following it.
         if hasCommittedPress {
             hasCommittedPress = false
-            onRetract?()
+            guard onRetract?(pressToken) == true else {
+                finishTouch()
+                return
+            }
         }
-
+        let heldStyle = pressStyle ?? style
         let palette = paletteView ?? KeyPaletteView()
         palette.configure(
-            items: style.alternatives,
-            font: style.font,
-            glyphColor: style.glyphColor,
-            isDarkMode: style.isDarkMode
+            items: heldStyle.alternatives,
+            font: heldStyle.font,
+            glyphColor: heldStyle.glyphColor,
+            isDarkMode: heldStyle.isDarkMode
         )
         paletteView = palette
         selectedAlternate = 0
@@ -550,9 +570,9 @@ struct KeyboardKey: UIViewRepresentable {
     var onTouchDown: (() -> Void)?
     var onTouchEnd: (() -> Void)?
     var onTap: (() -> Void)?
-    var onInsert: ((String) -> Void)?
+    var onInsert: ((String, UUID) -> Void)?
     var onSelectionChange: (() -> Void)?
-    var onRetract: (() -> Void)?
+    var onRetract: ((UUID) -> Bool)?
 
     func makeUIView(context: Context) -> MurmurKeyCapView {
         let view = MurmurKeyCapView()

@@ -21,6 +21,13 @@ let package = Package(
             exclude: [
                 "Assets.xcassets",
                 "AudioRecorder.swift",
+                "AppearanceMode.swift",
+                "CaptureCoordinator.swift",
+                "DictateView.swift",
+                "ModelRuntime.swift",
+                "ModelStatusView.swift",
+                "MurmurLiveActivity.swift",
+                "SpeechSegmenter.swift",
                 "CloudTranscriptionService.swift",
                 "ContentView.swift",
                 "DictationIntents.swift",
@@ -32,15 +39,24 @@ let package = Package(
                 "MurmurApp.swift",
                 "OnboardingView.swift",
                 "PrivacyInfo.xcprivacy",
-                "TranscriptionService.swift",
                 "TranscriptionStore.swift",
                 "en.lproj",
             ],
-            sources: ["TextProcessor.swift"]
+            sources: ["TextProcessor.swift", "ModelSchedulingPolicy.swift", "CaptureLifecycle.swift", "TranscriptionService.swift", "ModelRuntimeTypes.swift"]
+        ),
+        .target(
+            name: "MurmurKeyboardTyping",
+            path: "Sources/Shared",
+            exclude: ["SharedDefaults.swift", "DarwinNotificationCenter.swift"],
+            sources: ["KeyboardTypingPolicy.swift"]
+        ),
+        .testTarget(
+            name: "MurmurRuntimeTests",
+            dependencies: ["MurmurTextProcessing"]
         ),
         .testTarget(
             name: "MurmurTextProcessingTests",
-            dependencies: ["MurmurTextProcessing"]
+            dependencies: ["MurmurTextProcessing", "MurmurKeyboardTyping"]
         ),
     ]
 )

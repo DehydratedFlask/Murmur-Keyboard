@@ -67,6 +67,9 @@
          </BuildableReference>
       </MacroExpansion>
       <Testables>
+         <TestableReference skipped = "NO">
+            <BuildableReference BuildableIdentifier = "primary" BlueprintIdentifier = "3850A102199327A4831E1E2D" BuildableName = "MurmurRuntimeTests.xctest" BlueprintName = "MurmurRuntimeTests" ReferencedContainer = "container:Murmur.xcodeproj"/>
+         </TestableReference>
       </Testables>
    </TestAction>
    <LaunchAction

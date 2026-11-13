@@ -17,7 +17,7 @@ packages:
     from: "0.17.0"
   FluidAudio:
     url: https://github.com/FluidInference/FluidAudio.git
-    from: "0.17.7"
+    from: "0.18.3"
 
 targets:
   Murmur:
@@ -112,6 +112,20 @@ targets:
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
 
+  MurmurRuntimeTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - Tests/MurmurRuntimeTests
+    dependencies:
+      - target: Murmur
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.murmurkeyboard.app.runtime-tests
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Murmur.app/Murmur"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+
 schemes:
   Murmur:
     build:
@@ -121,3 +135,6 @@ schemes:
         MurmurWidget: all
     run:
       config: Debug
+    test:
+      targets:
+        - MurmurRuntimeTests

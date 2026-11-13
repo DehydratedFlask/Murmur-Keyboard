@@ -1,303 +1,294 @@
 import Foundation
-import WhisperKit
-import FluidAudio
+import Combine
 
-/// Wrapper to pass non-Sendable types across isolation boundaries when
-/// the developer has ensured safety (e.g., no concurrent mutation).
-struct UnsafeSendableBox<T>: @unchecked Sendable {
-    let value: T
-    init(_ value: T) { self.value = value }
-}
-
-/// Manages WhisperKit model loading and audio transcription entirely on-device.
+/// Main-actor UI coordinator. Model objects live only in NativeModelRuntime;
+/// the policy admits exactly one load, decode or unload across actor suspension.
 @MainActor
 final class TranscriptionService: ObservableObject {
-
-    // MARK: - Published State
-
     @Published private(set) var modelState: ModelLoadState = .unloaded
     @Published private(set) var isTranscribing = false
-    @Published private(set) var loadingProgress: String = ""
+    @Published private(set) var loadingProgress = ""
     @Published private(set) var selectedEngine: TranscriptionEngine = .whisper
+    @Published private(set) var activeModelLabel: String?
+    @Published private(set) var readinessStage: ModelReadinessStage = .unloaded
+    @Published private(set) var downloadFraction: Double?
+    @Published private(set) var cachedModelBytes: Int64 = 0
     @Published var selectedModel: WhisperModel = {
         if let raw = UserDefaults.standard.string(forKey: "selectedWhisperModel"),
-           let model = WhisperModel(rawValue: raw) {
-            return model
-        }
+           let model = WhisperModel(rawValue: raw) { return model }
         return .tiny
     }() {
         didSet {
+            guard selectedModel != oldValue else { return }
             UserDefaults.standard.set(selectedModel.rawValue, forKey: "selectedWhisperModel")
+            selectionChanged()
         }
     }
 
-    // MARK: - Private Properties
+    private let runtime: any ModelRuntimeBackend
+    private let readinessChanged: @MainActor (Bool, String?) -> Void
+    private var policy = ModelSchedulingPolicy(selection: ModelSelection(engine: .whisper, whisperModel: .tiny))
+    private var activeSelection: ModelSelection?
+    private var failedSelection: ModelSelection?
+    private var loadTask: Task<Void, Never>?
+    private var loadID: UUID?
+    private var wantsModelLoaded = false
 
-    private var whisperKit: WhisperKit?
-    private var currentModelName: String?
-    private let parakeet = ParakeetTranscriptionService()
+    var isModelSwitchDeferred: Bool { policy.isSwitchDeferred }
 
-    init() {
+    init(runtime: any ModelRuntimeBackend, readinessChanged: @escaping @MainActor (Bool, String?) -> Void = { _, _ in }) {
+        self.runtime = runtime
+        self.readinessChanged = readinessChanged
         selectedEngine = TranscriptionEngine.persisted
+        policy.select(selection)
+        Task { [weak self, runtime] in
+            let bytes = await runtime.cachedBytes()
+            self?.cachedModelBytes = bytes
+        }
     }
 
-    // MARK: - Engine Selection
+    private var selection: ModelSelection {
+        ModelSelection(engine: selectedEngine, whisperModel: selectedModel)
+    }
 
-    /// Switches the recognizer used for dictation. The previous engine's
-    /// weights are released immediately and the new engine starts loading, so
-    /// both models are never resident together.
     func setEngine(_ engine: TranscriptionEngine) {
         guard engine != selectedEngine else { return }
-
         selectedEngine = engine
         engine.persist()
-
-        whisperKit = nil
-        currentModelName = nil
-        modelState = .unloaded
-        loadingProgress = ""
-        SharedDefaults.setModelReady(false, progressText: nil)
-
-        Task { [weak self] in
-            await self?.parakeet.unloadModel()
-            guard let self, self.selectedEngine == engine else { return }
-            await self.loadModel()
-        }
+        selectionChanged()
     }
 
-    // MARK: - Model Loading
+    private func selectionChanged() {
+        policy.select(selection)
+        wantsModelLoaded = true
+        // During capture the old choice stays pinned through final recognition.
+        // endCapture applies the latest choice, coalescing intermediate changes.
+        if policy.captureCount == 0 { startLoadingIfNeeded() }
+    }
 
-    /// Loads the active engine's model. Automatically downloads on first launch, then cached locally.
+    /// Pin selection before starting capture. Keep the lease until final
+    /// processing/cancellation has finished; nested recognition leases are safe.
+    func beginCapture() {
+        policy.beginCapture()
+    }
+
+    func endCapture() {
+        policy.endCapture()
+        objectWillChange.send()
+        if policy.captureCount == 0, wantsModelLoaded { startLoadingIfNeeded() }
+    }
+
+    /// Duplicate callers await one worker. Recognition uses a cancellable wait
+    /// below so cancelling a recording does not cancel another caller's load.
     func loadModel() async {
-        switch selectedEngine {
-        case .whisper:
-            await loadWhisperModel()
-        case .parakeet:
-            await loadParakeetModel()
+        wantsModelLoaded = true
+        failedSelection = nil
+        startLoadingIfNeeded()
+        await loadTask?.value
+    }
+
+    private func startLoadingIfNeeded() {
+        guard wantsModelLoaded, loadTask == nil, failedSelection != policy.effectiveSelection else { return }
+        if activeSelection == policy.effectiveSelection, modelState == .loaded { return }
+        loadTask = Task { [weak self] in
+            guard let self else { return }
+            await self.performLoadCycle()
         }
     }
 
-    private func loadWhisperModel() async {
-        let modelName = selectedModel.whisperKitName
-
-        SharedDefaults.setModelReady(false, progressText: nil)
-
-        // Skip if already loaded with the same model
-        if modelState == .loaded, currentModelName == modelName {
-            SharedDefaults.setModelReady(true, progressText: nil)
-            return
+    private func acquire(_ operation: ModelSchedulingPolicy<ModelSelection>.Operation) async throws {
+        while !policy.acquire(operation) {
+            try await Task.sleep(for: .milliseconds(40))
         }
+        // A cancelled waiter must not acquire and then abandon the gate.
+        if Task.isCancelled {
+            policy.release()
+            throw CancellationError()
+        }
+    }
 
-        // Prevent parallel loads
-        guard modelState != .loading else { return }
-
-        modelState = .loading
-        loadingProgress = "Preparing \(selectedModel.displayName) model…"
-        SharedDefaults.updateModelLoadingProgress(loadingProgress)
-
-        do {
-            // Update progress — download happens automatically on first launch
-            loadingProgress = "Downloading \(selectedModel.displayName) model (first launch only)\u{2026}"
-            SharedDefaults.updateModelLoadingProgress(loadingProgress)
-
-            // WhisperKit 0.9+ accepts a WhisperKitConfig for initialization.
-            // download: true ensures automatic download on first launch.
-            let kit = try await WhisperKit(
-                WhisperKitConfig(
-                    model: modelName,
-                    verbose: false,
-                    logLevel: .error,
-                    prewarm: true,
-                    load: true,
-                    download: true
-                )
-            )
-            self.whisperKit = kit
-            self.currentModelName = modelName
-            self.modelState = .loaded
-            self.loadingProgress = ""
-            SharedDefaults.setModelReady(true, progressText: nil)
-        } catch {
-            // Provide user-friendly messages for common failure modes
-            let desc = error.localizedDescription.lowercased()
-            let userMessage: String
-            if desc.contains("network") || desc.contains("internet") || desc.contains("offline") || desc.contains("timed out") {
-                userMessage = "Model download failed. Check your internet connection and try again."
-            } else {
-                userMessage = "Failed to load model: \(error.localizedDescription)"
+    private func performLoadCycle() async {
+        defer { loadTask = nil }
+        while wantsModelLoaded, !Task.isCancelled {
+            do { try await acquire(.maintenance) }
+            catch { return }
+            let target = policy.effectiveSelection
+            if activeSelection == target, modelState == .loaded {
+                policy.release()
+                return
             }
-            self.modelState = .error(userMessage)
-            self.loadingProgress = ""
-            SharedDefaults.setModelReady(false, progressText: nil)
-        }
-    }
-
-    private func loadParakeetModel() async {
-        SharedDefaults.setModelReady(false, progressText: nil)
-
-        if modelState == .loaded {
-            SharedDefaults.setModelReady(true, progressText: nil)
-            return
-        }
-
-        guard modelState != .loading else { return }
-
-        modelState = .loading
-        loadingProgress = "Downloading Parakeet model (first launch only)\u{2026}"
-        SharedDefaults.updateModelLoadingProgress(loadingProgress)
-
-        do {
-            try await parakeet.loadModel()
-            self.modelState = .loaded
-            self.loadingProgress = ""
-            SharedDefaults.setModelReady(true, progressText: nil)
-        } catch {
-            let desc = error.localizedDescription.lowercased()
-            let userMessage: String
-            if desc.contains("network") || desc.contains("internet") || desc.contains("offline") || desc.contains("timed out") {
-                userMessage = "Parakeet download failed. Check your internet connection and try again."
-            } else {
-                userMessage = "Failed to load Parakeet: \(error.localizedDescription)"
+            let operationID = UUID()
+            loadID = operationID
+            modelState = .loading
+            activeModelLabel = nil
+            report(.init(stage: .checkingCache), for: target)
+            await runtime.unload()
+            activeSelection = nil
+            do {
+                try Task.checkCancellation()
+                try await runtime.load(target) { [weak self] update in
+                    Task { @MainActor [weak self] in
+                        guard let self, self.loadID == operationID,
+                              self.policy.effectiveSelection == target else { return }
+                        self.report(update, for: target)
+                    }
+                }
+                try Task.checkCancellation()
+                // Selection may change while the SDK is suspended. Such a model
+                // is released before loading the latest choice and never ready.
+                guard target == policy.effectiveSelection, wantsModelLoaded else {
+                    loadID = nil
+                    await runtime.unload()
+                    policy.release()
+                    continue
+                }
+                activeSelection = target
+                failedSelection = nil
+                activeModelLabel = target.label
+                modelState = .loaded
+                readinessStage = .ready
+                loadingProgress = ""
+                downloadFraction = nil
+                loadID = nil
+                readinessChanged(true, nil)
+                cachedModelBytes = await runtime.cachedBytes()
+                policy.release()
+                if target != policy.effectiveSelection { continue }
+                return
+            } catch {
+                loadID = nil
+                await runtime.unload()
+                activeSelection = nil
+                activeModelLabel = nil
+                downloadFraction = nil
+                loadingProgress = ""
+                readinessChanged(false, nil)
+                if error is CancellationError || !wantsModelLoaded {
+                    modelState = .unloaded
+                    readinessStage = .unloaded
+                    policy.release()
+                    return
+                }
+                // A failure for a superseded choice must not poison the newest
+                // selection. Retry only that new choice, never an endless loop.
+                if target != policy.effectiveSelection {
+                    policy.release()
+                    continue
+                }
+                failedSelection = target
+                modelState = .error(Self.modelErrorMessage(error))
+                readinessStage = .failed
+                cachedModelBytes = await runtime.cachedBytes()
+                policy.release()
+                if target != policy.effectiveSelection { continue }
+                return
             }
-            self.modelState = .error(userMessage)
-            self.loadingProgress = ""
-            SharedDefaults.setModelReady(false, progressText: nil)
         }
     }
 
-    /// Unloads the current model to free memory.
-    /// Waits for any active transcription to finish before unloading.
+    private func report(_ progress: ModelRuntimeProgress, for target: ModelSelection) {
+        readinessStage = progress.stage
+        downloadFraction = progress.fraction.map { min(1, max(0, $0)) }
+        let suffix = downloadFraction.map { " \(Int($0 * 100))%" } ?? ""
+        loadingProgress = "\(target.label): \(progress.stage.title.lowercased())\(suffix)…"
+        readinessChanged(false, loadingProgress)
+    }
+
+    /// Wait for the SDK to return and for all capture leases to end before
+    /// releasing resources. Cancellation can abandon the wait, never its model.
     func unloadModel() async {
-        // Wait up to 10 seconds for any active transcription to finish.
-        var waited = 0
-        while isTranscribing, waited < 100 {
-            try? await Task.sleep(for: .milliseconds(100))
-            waited += 1
-        }
-
-        switch selectedEngine {
-        case .whisper:
-            whisperKit = nil
-            currentModelName = nil
-            modelState = .unloaded
-            loadingProgress = ""
-            SharedDefaults.setModelReady(false, progressText: nil)
-        case .parakeet:
-            await parakeet.unloadModel()
-            modelState = .unloaded
-            loadingProgress = ""
-            SharedDefaults.setModelReady(false, progressText: nil)
-        }
+        wantsModelLoaded = false
+        loadTask?.cancel()
+        await loadTask?.value
+        do {
+            while policy.captureCount > 0 {
+                try await Task.sleep(for: .milliseconds(40))
+            }
+            try await acquire(.maintenance)
+        } catch { return }
+        defer { policy.release() }
+        await runtime.unload()
+        activeSelection = nil
+        failedSelection = nil
+        activeModelLabel = nil
+        loadID = nil
+        modelState = .unloaded
+        readinessStage = .unloaded
+        loadingProgress = ""
+        downloadFraction = nil
+        readinessChanged(false, nil)
+        // An explicit new load request arriving during unload is honored later.
+        if wantsModelLoaded { Task { [weak self] in self?.startLoadingIfNeeded() } }
     }
 
-    // MARK: - Transcription
-
-    /// Transcribes audio from the file at the given URL with the active engine.
-    /// - Parameter audioURL: Path to a WAV/M4A audio file.
-    /// - Returns: Raw transcription text.
     func transcribe(audioURL: URL, languageCode: String?) async throws -> String {
         try Task.checkCancellation()
-        if modelState == .unloaded || modelState.isError { await loadModel() }
-        // Cloud fallback may arrive while the initial local model is still loading.
-        while modelState == .loading || isTranscribing {
-            try await Task.sleep(for: .milliseconds(100))
+        beginCapture()
+        policy.addFinalWaiter()
+        defer {
+            policy.removeFinalWaiter()
+            endCapture()
         }
+        failedSelection = nil
+        while true {
+            wantsModelLoaded = true
+            startLoadingIfNeeded()
+            // Task.value is not a cancellable wait. Poll only coordinator state;
+            // cancellation returns while the shared SDK load finishes safely.
+            while loadTask != nil {
+                try await Task.sleep(for: .milliseconds(40))
+            }
+            try Task.checkCancellation()
+            if case .error(let message) = modelState {
+                throw TranscriptionError.transcriptionFailed(message)
+            }
+            // An unload already holding the gate can finish after this capture
+            // starts. Recheck readiness after acquiring rather than decoding a
+            // model that was released during the wait.
+            guard modelState == .loaded, activeSelection == policy.effectiveSelection else { continue }
+            try await acquire(.finalRecognition)
+            if modelState == .loaded, activeSelection == policy.effectiveSelection { break }
+            policy.release()
+        }
+        isTranscribing = true
+        defer {
+            isTranscribing = false
+            policy.release()
+        }
+        let result = try await runtime.transcribe(audioURL: audioURL, languageCode: languageCode, prompt: recognitionPrompt)
         try Task.checkCancellation()
-        switch selectedEngine {
-        case .whisper:
-            return try await transcribeWithWhisper(audioURL: audioURL, languageCode: languageCode)
-        case .parakeet:
-            return try await transcribeWithParakeet(audioURL: audioURL, languageCode: languageCode)
-        }
+        return result
     }
 
-    private func transcribeWithParakeet(audioURL: URL, languageCode: String?) async throws -> String {
-        guard modelState == .loaded else {
-            throw TranscriptionError.modelNotLoaded
-        }
-
+    /// Opportunistic only: never queues behind loading, final decoding, or any
+    /// other preview. The coordinator cancels an active preview before final.
+    func transcribePreview(audioURL: URL, languageCode: String?) async throws -> String? {
+        try Task.checkCancellation()
+        guard loadTask == nil, modelState == .loaded,
+              activeSelection == policy.effectiveSelection,
+              policy.acquire(.preview) else { return nil }
+        beginCapture()
         isTranscribing = true
-        defer { isTranscribing = false }
-
-        return try await parakeet.transcribe(
-            audioURL: audioURL,
-            languageCode: languageCode
-        )
+        defer {
+            isTranscribing = false
+            policy.release()
+            endCapture()
+        }
+        let result = try await runtime.transcribe(audioURL: audioURL, languageCode: languageCode, prompt: recognitionPrompt)
+        try Task.checkCancellation()
+        return result
     }
 
-    private func transcribeWithWhisper(audioURL: URL, languageCode: String?) async throws -> String {
-        guard let whisperKit = whisperKit, modelState == .loaded else {
-            throw TranscriptionError.modelNotLoaded
-        }
-
-        isTranscribing = true
-        defer { isTranscribing = false }
-
-        let wrapper = UnsafeSendableBox(whisperKit)
-        let path = audioURL.path
-        let dictionary = PersonalDictionary.enabledEntries
-        let language = languageCode
-        let fullText = try await Self.runTranscription(
-            kit: wrapper,
-            audioPath: path,
-            dictionary: dictionary,
-            language: language
-        )
-        return fullText
+    private var recognitionPrompt: String? {
+        PersonalDictionary.recognitionPrompt(entries: PersonalDictionary.enabledEntries)
     }
 
-    /// Runs the actual WhisperKit transcription off the main actor to satisfy Swift 6 sendability.
-    private nonisolated static func runTranscription(
-        kit: UnsafeSendableBox<WhisperKit>,
-        audioPath: String,
-        dictionary: [PersonalDictionaryEntry],
-        language: String?
-    ) async throws -> String {
-        let whisperKit = kit.value
-        let promptTokens: [Int]?
-        if let prompt = PersonalDictionary.recognitionPrompt(entries: dictionary),
-           let tokenizer = whisperKit.tokenizer {
-            // Whisper reserves half of its text context for the previous-text
-            // prompt. Keep the most recent 200 tokens within that budget.
-            promptTokens = Array(tokenizer.encode(text: prompt).suffix(200))
-        } else {
-            promptTokens = nil
+    private static func modelErrorMessage(_ error: Error) -> String {
+        let description = error.localizedDescription.lowercased()
+        if description.contains("network") || description.contains("internet") || description.contains("offline") || description.contains("timed out") {
+            return "Model download failed. Check your internet connection and try again. Downloaded models work offline."
         }
-        let options = DecodingOptions(
-            verbose: false,
-            task: .transcribe,
-            language: language,
-            temperature: 0.0,
-            usePrefillPrompt: true,
-            usePrefillCache: true,
-            skipSpecialTokens: true,
-            withoutTimestamps: true,
-            // Trim the tail of each window: the model most often invents
-            // "Thank you." and "Please subscribe" over the last second of
-            // mostly-silent audio.
-            windowClipTime: 1.0,
-            promptTokens: promptTokens,
-            suppressBlank: true,
-            compressionRatioThreshold: 2.4,
-            logProbThreshold: -1.0,
-            // Reject a first token the model is not confident about, which is
-            // how a hallucinated opening word over noise gets thrown away.
-            firstTokenLogProbThreshold: -1.2,
-            noSpeechThreshold: 0.6,
-            chunkingStrategy: .vad
-        )
-
-        let results: [TranscriptionResult] = try await whisperKit.transcribe(
-            audioPath: audioPath,
-            decodeOptions: options
-        )
-
-        let fullText = results
-            .compactMap { $0.text }
-            .joined(separator: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-
-        return fullText
+        return "Failed to load model: \(error.localizedDescription)"
     }
 }
 
@@ -325,7 +316,7 @@ enum ModelLoadState: Equatable {
     }
 }
 
-enum WhisperModel: String, CaseIterable, Identifiable {
+enum WhisperModel: String, CaseIterable, Identifiable, Sendable {
     case tiny
     case base
 
@@ -368,7 +359,7 @@ enum TranscriptionError: LocalizedError {
 // MARK: - Recognition Engine
 
 /// The on-device recognition engines Murmur supports.
-enum TranscriptionEngine: String, CaseIterable, Identifiable {
+enum TranscriptionEngine: String, CaseIterable, Identifiable, Sendable {
     case whisper
     case parakeet
 
@@ -403,50 +394,5 @@ enum TranscriptionEngine: String, CaseIterable, Identifiable {
 
     func persist() {
         UserDefaults.standard.set(rawValue, forKey: Self.storageKey)
-    }
-}
-
-// MARK: - Parakeet
-
-/// Runs NVIDIA Parakeet (TDT 0.6B) fully on-device through FluidAudio, which
-/// executes the Core ML encoder/decoder on the Neural Engine.
-///
-/// The first `loadModel()` downloads the Core ML bundles (~600 MB) from
-/// Hugging Face; afterwards they load from disk. Nothing is uploaded to a
-/// server — the download is model weights only.
-@MainActor
-final class ParakeetTranscriptionService {
-
-    private var manager: AsrManager?
-
-    var isLoaded: Bool { manager != nil }
-
-    func loadModel() async throws {
-        let models = try await AsrModels.downloadAndLoad(version: .v3)
-        let manager = AsrManager(config: .default)
-        try await manager.loadModels(models)
-        self.manager = manager
-    }
-
-    func unloadModel() async {
-        guard let manager else { return }
-        await manager.cleanup()
-        self.manager = nil
-    }
-
-    func transcribe(audioURL: URL, languageCode: String?) async throws -> String {
-        guard let manager else { throw TranscriptionError.modelNotLoaded }
-        // A fresh decoder state per dictation; Parakeet is otherwise stateless
-        // across utterances.
-        var decoderState = try TdtDecoderState()
-        // Parakeet v3 is multilingual; the language is a decoding hint, so an
-        // unsupported code is left to auto-detection rather than forced.
-        let language = languageCode.flatMap { Language(rawValue: $0) }
-        let result = try await manager.transcribe(
-            audioURL,
-            decoderState: &decoderState,
-            language: language
-        )
-        return result.text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

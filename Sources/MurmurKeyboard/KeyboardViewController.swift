@@ -14,6 +14,7 @@ class KeyboardViewController: UIInputViewController {
     private var lastTraitRefresh: Date?
     /// A text-change pass is already queued for the next runloop turn.
     private var textChangeScheduled = false
+    private var lastDocumentID: UUID?
 
     /// Stale-session timeout, driven by the app's Session duration setting.
     private var dictationTimeout: TimeInterval {
@@ -29,10 +30,12 @@ class KeyboardViewController: UIInputViewController {
         super.viewDidLoad()
 
         viewModel.textDocumentProxy = textDocumentProxy
+        lastDocumentID = textDocumentProxy.documentIdentifier
         viewModel.inputViewController = self
         viewModel.hasFullAccess = hasFullAccess
         viewModel.showGlobeKey = needsInputModeSwitchKey
         viewModel.prepareHaptics()
+        viewModel.prepareVocabulary()
         viewModel.autoCapitalize()
         viewModel.refreshTextTraits(interfaceStyle: traitCollection.userInterfaceStyle)
         viewModel.refreshSharedState()
@@ -95,6 +98,10 @@ class KeyboardViewController: UIInputViewController {
         viewModel.hasFullAccess = hasFullAccess
         SharedDefaults.setFullAccessGranted(hasFullAccess)
         viewModel.showGlobeKey = needsInputModeSwitchKey
+        viewModel.invalidateTypingContext()
+        lastDocumentID = textDocumentProxy.documentIdentifier
+        lastTraitRefresh = nil
+        viewModel.prepareVocabulary()
         viewModel.autoCapitalize()
         viewModel.refreshTextTraits(interfaceStyle: traitCollection.userInterfaceStyle)
         viewModel.restoreActiveDictationSession()
@@ -120,6 +127,7 @@ class KeyboardViewController: UIInputViewController {
         stopDarwinObservers()
         stopPendingTextTimer()
         viewModel.stopContinuousDelete()
+        viewModel.invalidateTypingContext()
     }
 
     override func viewWillTransition(
@@ -132,7 +140,17 @@ class KeyboardViewController: UIInputViewController {
 
     override func textDidChange(_ textInput: UITextInput?) {
         super.textDidChange(textInput)
+        viewModel.invalidateSuggestions()
+        scheduleTextChange()
+    }
 
+    override func selectionDidChange(_ textInput: UITextInput?) {
+        super.selectionDidChange(textInput)
+        viewModel.invalidateSuggestions()
+        scheduleTextChange()
+    }
+
+    private func scheduleTextChange() {
         // Never touch the text proxy from inside its own change callback. Doing
         // that re-enters the host's text system, and several hosts (Notes among
         // them) will block there — the keyboard then looks frozen: keys highlight
@@ -150,23 +168,30 @@ class KeyboardViewController: UIInputViewController {
     private func processTextChange() {
         viewModel.textDocumentProxy = textDocumentProxy
 
-        let context = textDocumentProxy.documentContextBeforeInput ?? ""
-        refreshTraitsIfStale()
+        guard let snapshot = viewModel.contextSnapshot() else { return }
+        let context = snapshot.before ?? ""
+        if lastDocumentID != snapshot.documentID {
+            lastDocumentID = snapshot.documentID
+            lastTraitRefresh = nil
+            viewModel.invalidateTypingContext()
+        }
+        viewModel.observeTypingContext(snapshot)
+        refreshTraitsIfStale(context: context)
         viewModel.refreshReturnKeyState(context: context)
         viewModel.autoCapitalize(context: context)
-        viewModel.refreshSuggestions(context: context)
+        viewModel.refreshSuggestions(snapshot: snapshot)
     }
 
     /// Traits change when the field changes, not per letter. A short throttle
     /// keeps the layout and appearance right without paying for it on every
     /// keystroke.
-    private func refreshTraitsIfStale() {
+    private func refreshTraitsIfStale(context: String) {
         let now = Date()
         if let last = lastTraitRefresh, now.timeIntervalSince(last) < 0.6 {
             return
         }
         lastTraitRefresh = now
-        viewModel.refreshTextTraits(interfaceStyle: traitCollection.userInterfaceStyle)
+        viewModel.refreshTextTraits(interfaceStyle: traitCollection.userInterfaceStyle, context: context)
     }
 
     // MARK: - Pending Text Handling
@@ -259,10 +284,6 @@ class KeyboardViewController: UIInputViewController {
     }
 }
 
-extension KeyboardViewController: UIInputViewAudioFeedback {
-    var enableInputClicksWhenVisible: Bool { true }
-}
-
 // MARK: - Keyboard ViewModel
 
 /// Observable view model bridging UIKit (textDocumentProxy) to the SwiftUI keyboard view.
@@ -313,6 +334,7 @@ final class KeyboardViewModel: ObservableObject {
 
     // Continuous backspace
     private var backspaceTimer: Timer?
+    private var deleteGeneration: UInt64 = 0
 
     // Double-space period shortcut
     private var lastSpaceTime: Date?
@@ -323,7 +345,13 @@ final class KeyboardViewModel: ObservableObject {
     private var lastCorrection: Correction?
     /// What the press in progress typed, so a long press that opens the accent
     /// palette can take it back.
-    private var lastPressCommit: String?
+    private var lastPressCommit: KeyboardPressCommit?
+    private var lastPressContext: KeyboardSuggestionContext?
+    private var retractedPress: KeyboardPressCommit?
+    private var keyHapticsEnabled = false
+    private var allowsAutocorrection = true
+    private var suggestionGeneration: UInt64 = 0
+    private var suggestionContext: KeyboardSuggestionContext?
     private var suggestionTask: Task<Void, Never>?
 
     /// The proxy through which the keyboard inserts/deletes text.
@@ -341,6 +369,7 @@ final class KeyboardViewModel: ObservableObject {
     }
 
     func refreshSharedState() {
+        keyHapticsEnabled = SharedDefaults.isKeyHapticsEnabled()
         let style = SharedDefaults.formattingStyle
         if formattingStyle != style { formattingStyle = style }
         let language = SharedDefaults.autoDetectLanguage ? "auto" : (SharedDefaults.selectedLanguages.first ?? "en")
@@ -383,7 +412,18 @@ final class KeyboardViewModel: ObservableObject {
         interfaceStyle: UIUserInterfaceStyle = .unspecified,
         context: String? = nil
     ) {
+        KeyboardPerformance.measure("ProxyTraits") {
+            applyTextTraits(interfaceStyle: interfaceStyle, context: context)
+        }
+    }
+
+    private func applyTextTraits(interfaceStyle: UIUserInterfaceStyle, context: String?) {
         let newKeyboardType = textDocumentProxy?.keyboardType ?? .default
+        let newAllowsAutocorrection = textDocumentProxy?.autocorrectionType != .no
+        if newKeyboardType != keyboardType || newAllowsAutocorrection != allowsAutocorrection {
+            invalidateSuggestions()
+        }
+        allowsAutocorrection = newAllowsAutocorrection
         let newReturnKeyType = textDocumentProxy?.returnKeyType ?? .default
         let newAutocapitalizationType =
             textDocumentProxy?.autocapitalizationType ?? .sentences
@@ -406,7 +446,7 @@ final class KeyboardViewModel: ObservableObject {
                 : interfaceStyle == .dark
         }
 
-        let documentContext = context ?? (textDocumentProxy?.documentContextBeforeInput ?? "")
+        let documentContext = context ?? (proxyContextBefore() ?? "")
         let newReturnKeyEnabled =
             !newEnablesReturnKeyAutomatically || !documentContext.isEmpty
 
@@ -505,30 +545,58 @@ final class KeyboardViewModel: ObservableObject {
 
     // MARK: - Haptics
 
-    /// Key feedback is off unless the user turns on Key haptics. Keeping every
-    /// keystroke free of audio-system calls matters: `playInputClick()` goes
-    /// through Core Audio, and typing while the app still holds a
-    /// play-and-record session could block the keyboard's main thread.
+    /// Feedback uses the cached preference and haptics only, keeping shared
+    /// preference reads and audio-system work out of key delivery.
     func triggerLightHaptic() {
-        guard SharedDefaults.isKeyHapticsEnabled(), hasFullAccess else { return }
-        UIDevice.current.playInputClick()
-        lightHaptic.impactOccurred()
-        lightHaptic.prepare()
+        guard keyHapticsEnabled, hasFullAccess else { return }
+        KeyboardPerformance.measure("Feedback") {
+            lightHaptic.impactOccurred()
+            lightHaptic.prepare()
+        }
     }
 
     func triggerMediumHaptic() {
-        guard SharedDefaults.isKeyHapticsEnabled(), hasFullAccess else { return }
-        UIDevice.current.playInputClick()
-        mediumHaptic.impactOccurred()
-        mediumHaptic.prepare()
+        guard keyHapticsEnabled, hasFullAccess else { return }
+        KeyboardPerformance.measure("Feedback") {
+            mediumHaptic.impactOccurred()
+            mediumHaptic.prepare()
+        }
     }
 
     /// A light tick as the accent palette's selection moves, matching the feel
     /// of Apple's keyboard rather than a full key press.
     func triggerSelectionHaptic() {
-        guard SharedDefaults.isKeyHapticsEnabled(), hasFullAccess else { return }
-        selectionHaptic.selectionChanged()
-        selectionHaptic.prepare()
+        guard keyHapticsEnabled, hasFullAccess else { return }
+        KeyboardPerformance.measure("Feedback") {
+            selectionHaptic.selectionChanged()
+            selectionHaptic.prepare()
+        }
+    }
+
+    private func proxyContextBefore(_ proxy: UITextDocumentProxy? = nil) -> String? {
+        KeyboardPerformance.measure("ProxyContext") {
+            (proxy ?? textDocumentProxy)?.documentContextBeforeInput
+        }
+    }
+
+    private func proxyContextAfter(_ proxy: UITextDocumentProxy? = nil) -> String? {
+        KeyboardPerformance.measure("ProxyContext") {
+            (proxy ?? textDocumentProxy)?.documentContextAfterInput
+        }
+    }
+
+    private func insertIntoProxy(_ text: String, proxy: UITextDocumentProxy? = nil) {
+        invalidateSuggestions()
+        KeyboardPerformance.measure("ProxyInsert") {
+            (proxy ?? textDocumentProxy)?.insertText(text)
+        }
+    }
+
+    private func deleteFromProxy(_ proxy: UITextDocumentProxy? = nil) {
+        invalidateSuggestions()
+        KeyboardPerformance.measure("ProxyDelete") {
+            (proxy ?? textDocumentProxy)?.deleteBackward()
+        }
     }
 
     // MARK: - Text Input
@@ -538,11 +606,12 @@ final class KeyboardViewModel: ObservableObject {
 
     func insertText(_ text: String) {
         lastPressCommit = nil
+        lastPressContext = nil
         let textToInsert =
             (isUppercase || autocapitalizationType == .allCharacters)
                 ? text.uppercased()
                 : text.lowercased()
-        textDocumentProxy?.insertText(textToInsert)
+        insertIntoProxy(textToInsert)
         lastSpaceTime = nil
         lastCorrection = nil
 
@@ -554,7 +623,8 @@ final class KeyboardViewModel: ObservableObject {
         }
     }
 
-    func insertCharacter(_ character: String) {
+    func insertCharacter(_ character: String, pressToken: UUID = UUID()) {
+        retractedPress = nil
         if Self.punctuationCommittingWord.contains(character) {
             autocorrectTrailingWord()
             // Apple drops a space typed just before punctuation: "Hello ,"
@@ -563,16 +633,19 @@ final class KeyboardViewModel: ObservableObject {
         } else {
             lastCorrection = nil
         }
-        textDocumentProxy?.insertText(character)
+        insertIntoProxy(character)
         lastSpaceTime = nil
-        lastPressCommit = character
+        lastPressContext = nil
+        lastPressCommit = textDocumentProxy.map {
+            KeyboardPressCommit(token: pressToken, text: character, documentID: $0.documentIdentifier)
+        }
     }
 
     /// Removes the single space before a punctuation mark, as the system
     /// keyboard does, but only when a word (or a closing bracket) precedes it.
     private func removeSpaceBeforePunctuation() {
         guard let proxy = textDocumentProxy,
-              let context = proxy.documentContextBeforeInput,
+              let context = proxyContextBefore(proxy),
               context.hasSuffix(" ")
         else { return }
 
@@ -582,18 +655,27 @@ final class KeyboardViewModel: ObservableObject {
                 || [")", "]", "\"", "'"].contains(beforeSpace)
         else { return }
 
-        proxy.deleteBackward()
+        deleteFromProxy(proxy)
     }
 
-    func insertAlternate(_ character: String) {
+    func insertAlternate(_ character: String, pressToken: UUID = UUID()) {
         lastCorrection = nil
         // Resolve the case here instead of trusting the key's label: with the
         // text bookkeeping deferred by a runloop turn, a stale shift state would
         // otherwise type the rest of the sentence in capitals.
-        let resolved = isUppercase ? character.uppercased() : character.lowercased()
-        textDocumentProxy?.insertText(resolved)
+        // A held accent replaces the same press, including its original case
+        // after the initial letter has already consumed one-shot shift.
+        let uppercase = retractedPress?.token == pressToken
+            ? retractedPress?.text.first?.isUppercase == true
+            : isUppercase
+        retractedPress = nil
+        let resolved = uppercase ? character.uppercased() : character.lowercased()
+        insertIntoProxy(resolved)
         lastSpaceTime = nil
-        lastPressCommit = resolved
+        lastPressContext = nil
+        lastPressCommit = textDocumentProxy.map {
+            KeyboardPressCommit(token: pressToken, text: resolved, documentID: $0.documentIdentifier)
+        }
         if isShifted && !isCapsLocked {
             isShifted = false
         }
@@ -602,39 +684,46 @@ final class KeyboardViewModel: ObservableObject {
     /// Undoes the character typed by a press that has turned into an accent
     /// choice. Only removes text whose final character is still the one this
     /// press inserted, so it can never eat anything else.
-    func retractLastKeyPress() {
-        guard let committed = lastPressCommit else { return }
+    @discardableResult
+    func retractKeyPress(_ token: UUID) -> Bool {
+        guard let committed = lastPressCommit, committed.token == token else { return false }
+        let expectedContext = lastPressContext
         lastPressCommit = nil
-        guard let proxy = textDocumentProxy,
-              let context = proxy.documentContextBeforeInput,
-              context.hasSuffix(committed)
-        else { return }
+        lastPressContext = nil
+        guard let snapshot = contextSnapshot(), snapshot.selectedText == nil,
+              let context = snapshot.before,
+              expectedContext == nil || expectedContext == snapshot,
+              committed.canRetract(token: token, documentID: snapshot.documentID, context: context)
+        else { return false }
 
-        for _ in 0..<committed.count {
-            proxy.deleteBackward()
-        }
+        invalidateSuggestions()
+        for _ in 0..<committed.text.count { deleteFromProxy() }
+        retractedPress = committed
         lastSpaceTime = nil
+        return true
     }
 
     func deleteBackward() {
         lastPressCommit = nil
+        lastPressContext = nil
         if !revertLastCorrection() {
-            textDocumentProxy?.deleteBackward()
+            deleteFromProxy()
         }
         lastSpaceTime = nil
     }
 
     func insertSpace() {
         lastPressCommit = nil
+        lastPressContext = nil
         // Double-space period shortcut (matches Apple behavior)
         let now = Date()
-        let context = textDocumentProxy?.documentContextBeforeInput ?? ""
+        let context = proxyContextBefore() ?? ""
         if let last = lastSpaceTime,
            now.timeIntervalSince(last) < 0.3,
            canReplaceDoubleSpace(in: context) {
             lastCorrection = nil
-            textDocumentProxy?.deleteBackward()
-            textDocumentProxy?.insertText(". ")
+            deleteFromProxy()
+            insertIntoProxy(". ")
             lastSpaceTime = nil
             autoCapitalize()
             refreshSuggestions()
@@ -642,7 +731,7 @@ final class KeyboardViewModel: ObservableObject {
         }
 
         autocorrectTrailingWord()
-        textDocumentProxy?.insertText(" ")
+        insertIntoProxy(" ")
         lastSpaceTime = now
         autoCapitalize()
         refreshSuggestions()
@@ -650,8 +739,9 @@ final class KeyboardViewModel: ObservableObject {
 
     func insertReturn() {
         lastPressCommit = nil
+        lastPressContext = nil
         autocorrectTrailingWord()
-        textDocumentProxy?.insertText("\n")
+        insertIntoProxy("\n")
         lastSpaceTime = nil
         autoCapitalize()
         refreshSuggestions()
@@ -662,10 +752,10 @@ final class KeyboardViewModel: ObservableObject {
     // Apple's contract: a word is corrected when it is *committed* — space,
     // punctuation or return — not while it is still being typed, and one press
     // of delete puts the original spelling back. Everything runs on-device
-    // through UITextChecker, so nothing leaves the phone.
+    // through a bounded exact mapping, so nothing leaves the phone.
 
-    private let spellChecker = UITextChecker()
-    private let spellLanguage = "en_US"
+    private var typingPolicy = KeyboardTypingPolicy()
+    private var hasRequestedVocabulary = false
 
     private struct Correction {
         let original: String
@@ -677,34 +767,10 @@ final class KeyboardViewModel: ObservableObject {
         ".", ",", "!", "?", ";", ":", ")", "]", "}",
     ]
 
-    /// The typos and missing apostrophes people hit most often. The spell
-    /// checker's own guess list misses several of these, and adding an
-    /// apostrophe is something it never does on its own. Only spellings that
-    /// are not words in a language Murmur can dictate in are listed here, so
-    /// typing in another language is not "corrected" into English.
-    private static let knownCorrections: [String: String] = [
-        "teh": "the", "hte": "the", "thsi": "this", "tihs": "this",
-        "thta": "that", "adn": "and", "nad": "and",
-        "jsut": "just", "juts": "just", "waht": "what", "taht": "that",
-        "yuo": "you", "yuor": "your",
-        "thier": "their", "recieve": "receive",
-        "seperate": "separate", "definately": "definitely",
-        "occured": "occurred", "untill": "until", "wich": "which",
-        "becuase": "because", "beacuse": "because", "alot": "a lot",
-        "dont": "don't", "cant": "can't", "wont": "won't", "isnt": "isn't",
-        "arent": "aren't", "wasnt": "wasn't", "werent": "weren't",
-        "didnt": "didn't", "doesnt": "doesn't", "hadnt": "hadn't",
-        "hasnt": "hasn't", "havent": "haven't", "couldnt": "couldn't",
-        "wouldnt": "wouldn't", "shouldnt": "shouldn't", "mustnt": "mustn't",
-        "ive": "I've", "youre": "you're", "youve": "you've",
-        "youll": "you'll", "theyre": "they're", "theyve": "they've",
-        "theyll": "they'll", "weve": "we've", "thats": "that's",
-        "whats": "what's",
-    ]
-
     /// Apple does not autocorrect URL, email or web-search fields, and neither
     /// does Murmur.
     private var supportsCorrection: Bool {
+        guard allowsAutocorrection else { return false }
         switch keyboardType {
         case .URL, .emailAddress, .webSearch, .numberPad, .decimalPad,
              .phonePad, .namePhonePad, .asciiCapableNumberPad:
@@ -714,16 +780,19 @@ final class KeyboardViewModel: ObservableObject {
         }
     }
 
-    /// Loads the spell checker's dictionary once, while the keyboard is sitting
-    /// open and idle, so the first correction never stalls a keystroke.
-    func warmUpSpellChecker() {
-        _ = spellChecker.rangeOfMisspelledWord(
-            in: "the",
-            range: NSRange(location: 0, length: 3),
-            startingAt: 0,
-            wrap: false,
-            language: spellLanguage
-        )
+    /// UIKit supplies the user's supplementary lexicon asynchronously. Prepare
+    /// a bounded exact mapping once per extension instance, never on key-down.
+    func prepareVocabulary() {
+        guard !hasRequestedVocabulary, let inputViewController else { return }
+        hasRequestedVocabulary = true
+        inputViewController.requestSupplementaryLexicon { [weak self] lexicon in
+            let entries = lexicon.entries.prefix(KeyboardTypingPolicy.maximumVocabularyEntries)
+                .map { (input: $0.userInput, replacement: $0.documentText) }
+            Task { @MainActor [weak self] in
+                self?.typingPolicy = KeyboardTypingPolicy(vocabulary: entries)
+                self?.invalidateSuggestions()
+            }
+        }
     }
 
     /// Replaces an obvious typo in the word before the caret.
@@ -732,16 +801,17 @@ final class KeyboardViewModel: ObservableObject {
 
         guard supportsCorrection,
               let proxy = textDocumentProxy,
-              let context = proxy.documentContextBeforeInput,
+              proxy.selectedText == nil,
+              let context = proxyContextBefore(proxy),
               let word = Self.trailingWord(in: context),
               let replacement = correction(for: word),
               replacement != word
         else { return }
 
         for _ in 0..<word.count {
-            proxy.deleteBackward()
+            deleteFromProxy(proxy)
         }
-        proxy.insertText(replacement)
+        insertIntoProxy(replacement, proxy: proxy)
         lastCorrection = Correction(
             original: word,
             replacement: replacement,
@@ -758,7 +828,7 @@ final class KeyboardViewModel: ObservableObject {
 
         guard Date().timeIntervalSince(correction.date) < 4,
               let proxy = textDocumentProxy,
-              let context = proxy.documentContextBeforeInput
+              let context = proxyContextBefore(proxy)
         else { return false }
 
         let hasTrailingSpace = context.hasSuffix(" ")
@@ -766,167 +836,113 @@ final class KeyboardViewModel: ObservableObject {
         guard trimmed.hasSuffix(correction.replacement) else { return false }
 
         for _ in 0..<correction.replacement.count {
-            proxy.deleteBackward()
+            deleteFromProxy(proxy)
         }
         if hasTrailingSpace {
-            proxy.deleteBackward()
+            deleteFromProxy(proxy)
         }
-        proxy.insertText(correction.original + (hasTrailingSpace ? " " : ""))
+        insertIntoProxy(correction.original + (hasTrailingSpace ? " " : ""), proxy: proxy)
         autoCapitalize()
         refreshSuggestions()
         return true
     }
 
-    /// The corrected spelling of `word`, or nil when it looks intentional.
     private func correction(for word: String) -> String? {
-        guard !word.isEmpty, word.count <= 24 else { return nil }
-
-        let lower = word.lowercased()
-        // "i" is the one single-letter correction every iPhone makes.
-        if lower == "i" { return "I" }
-        if let known = Self.knownCorrections[lower] {
-            return applyCase(of: word, to: known)
-        }
-
-        // Leave short words, acronyms, camelCase and non-Latin scripts alone.
-        guard word.count >= 3,
-              word.allSatisfy({ $0.isLetter || $0 == "'" || $0 == "’" }),
-              word.unicodeScalars.allSatisfy(\.isASCII),
-              !word.dropFirst().contains(where: { $0.isUppercase })
-        else { return nil }
-
-        let range = NSRange(location: 0, length: (word as NSString).length)
-        guard spellChecker.rangeOfMisspelledWord(
-            in: word,
-            range: range,
-            startingAt: 0,
-            wrap: false,
-            language: spellLanguage
-        ).location != NSNotFound else { return nil }
-
-        guard let guesses = spellChecker.guesses(
-            forWordRange: range,
-            in: word,
-            language: spellLanguage
-        ), !guesses.isEmpty else { return nil }
-
-        let limit = word.count <= 5 ? 1 : 2
-        let ranked = guesses
-            .filter { !$0.isEmpty && $0.caseInsensitiveCompare(word) != .orderedSame }
-            .map { (guess: $0, distance: editDistance(lower, $0.lowercased())) }
-            .filter { $0.distance <= limit }
-            .min { $0.distance < $1.distance }
-
-        guard let best = ranked,
-              best.guess.lowercased().first == lower.first
-        else { return nil }
-
-        return applyCase(of: word, to: best.guess)
-    }
-
-    /// Keeps the capitalisation the user typed: "Teh" corrects to "The",
-    /// "TEH" to "THE", "teh" to "the".
-    private func applyCase(of source: String, to replacement: String) -> String {
-        if source.count > 1, source == source.uppercased() {
-            return replacement.uppercased()
-        }
-        guard let first = source.first, first.isUppercase else { return replacement }
-        return replacement.prefix(1).uppercased() + String(replacement.dropFirst())
-    }
-
-    private func editDistance(_ first: String, _ second: String) -> Int {
-        let a = Array(first)
-        let b = Array(second)
-        if a.isEmpty { return b.count }
-        if b.isEmpty { return a.count }
-
-        var previous = Array(0...b.count)
-        var current = [Int](repeating: 0, count: b.count + 1)
-
-        for i in 1...a.count {
-            current[0] = i
-            for j in 1...b.count {
-                let cost = a[i - 1] == b[j - 1] ? 0 : 1
-                current[j] = min(
-                    previous[j] + 1,
-                    current[j - 1] + 1,
-                    previous[j - 1] + cost
-                )
-            }
-            swap(&previous, &current)
-        }
-        return previous[b.count]
+        KeyboardPerformance.measure("Correction") { typingPolicy.correction(for: word) }
     }
 
     // MARK: - Suggestions
 
-    /// The correction the keyboard would make, offered in the toolbar before it
-    /// happens. Runs after every text change like Apple's prediction bar, but a
-    /// beat later so the keystroke itself is never spent waiting on the
-    /// dictionary.
-    func refreshSuggestions(context: String? = nil) {
-        suggestionTask?.cancel()
+    func contextSnapshot() -> KeyboardSuggestionContext? {
+        guard let proxy = textDocumentProxy else { return nil }
+        return KeyboardPerformance.measure("ProxyContext") {
+            KeyboardSuggestionContext(
+                before: proxy.documentContextBeforeInput,
+                after: proxy.documentContextAfterInput,
+                documentID: proxy.documentIdentifier,
+                selectedText: proxy.selectedText
+            )
+        }
+    }
 
-        let documentContext = context ?? (textDocumentProxy?.documentContextBeforeInput ?? "")
-        guard supportsCorrection,
-              let word = Self.trailingWord(in: documentContext),
-              word.count >= 2
+    func invalidateSuggestions() {
+        suggestionGeneration &+= 1
+        suggestionTask?.cancel()
+        suggestionTask = nil
+        suggestionContext = nil
+        if !suggestions.isEmpty { suggestions = [] }
+    }
+
+    /// Reuse the controller's deferred snapshot to detect cursor / host edits
+    /// while a key is held, without adding a proxy context read per key-down.
+    func observeTypingContext(_ snapshot: KeyboardSuggestionContext) {
+        guard let committed = lastPressCommit else { return }
+        guard snapshot.selectedText == nil,
+              committed.canRetract(token: committed.token, documentID: snapshot.documentID, context: snapshot.before ?? ""),
+              lastPressContext == nil || lastPressContext == snapshot
         else {
-            if !suggestions.isEmpty { suggestions = [] }
+            lastPressCommit = nil
+            lastPressContext = nil
             return
         }
+        lastPressContext = snapshot
+    }
 
-        // UITextChecker is the one genuinely expensive call on this path, so it
-        // waits for a pause in typing: someone typing fast never pays for it,
-        // and the suggestion appears the moment they stop.
+    func invalidateTypingContext() {
+        retractedPress = nil
+        lastPressCommit = nil
+        lastPressContext = nil
+        lastCorrection = nil
+        lastSpaceTime = nil
+        invalidateSuggestions()
+    }
+
+    /// Publish only after a short pause and only for the exact document / cursor
+    /// context that produced the candidate. Clear the old chip immediately.
+    func refreshSuggestions(snapshot: KeyboardSuggestionContext? = nil) {
+        invalidateSuggestions()
+        guard let snapshot = snapshot ?? contextSnapshot(), supportsCorrection,
+              snapshot.selectedText == nil,
+              let word = Self.trailingWord(in: snapshot.before ?? ""), word.count >= 2
+        else { return }
+        let generation = suggestionGeneration
         suggestionTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(300))
-            guard !Task.isCancelled else { return }
-            self?.updateSuggestions(for: word)
+            guard !Task.isCancelled, let self,
+                  self.suggestionGeneration == generation,
+                  self.supportsCorrection,
+                  self.contextSnapshot() == snapshot,
+                  let replacement = self.correction(for: word), replacement != word
+            else { return }
+            self.suggestionContext = snapshot
+            self.suggestions = [replacement]
         }
     }
 
-    private func updateSuggestions(for word: String) {
-        guard supportsCorrection,
-              let replacement = correction(for: word),
-              replacement != word
+    /// A displayed candidate is never allowed to act on a different word.
+    func applySuggestion(_ suggestion: String) {
+        guard suggestions.contains(suggestion), supportsCorrection,
+              let expectedContext = suggestionContext,
+              contextSnapshot() == expectedContext,
+              let proxy = textDocumentProxy,
+              let word = Self.trailingWord(in: expectedContext.before ?? ""),
+              correction(for: word) == suggestion
         else {
-            if !suggestions.isEmpty { suggestions = [] }
+            invalidateSuggestions()
             return
         }
-        if suggestions != [replacement] {
-            suggestions = [replacement]
-        }
-    }
-
-    /// Applies the offered correction immediately, the way tapping a candidate
-    /// in Apple's prediction bar does.
-    func applySuggestion(_ suggestion: String) {
-        suggestionTask?.cancel()
+        invalidateSuggestions()
         lastPressCommit = nil
-        guard let proxy = textDocumentProxy,
-              let context = proxy.documentContextBeforeInput,
-              let word = Self.trailingWord(in: context)
-        else { return }
-
-        for _ in 0..<word.count {
-            proxy.deleteBackward()
-        }
-        proxy.insertText(suggestion)
-        lastCorrection = Correction(
-            original: word,
-            replacement: suggestion,
-            date: Date()
-        )
+        lastPressContext = nil
+        for _ in 0..<word.count { deleteFromProxy(proxy) }
+        insertIntoProxy(suggestion, proxy: proxy)
+        lastCorrection = Correction(original: word, replacement: suggestion, date: Date())
         lastSpaceTime = nil
-        suggestions = []
         autoCapitalize()
     }
 
     private static func trailingWord(in context: String) -> String? {
-        let letters = context.reversed().prefix { $0.isLetter || $0 == "'" || $0 == "’" }
-        guard !letters.isEmpty else { return nil }
-        return String(letters.reversed())
+        KeyboardTypingPolicy.trailingWord(in: context)
     }
 
     // MARK: - Auto-capitalization (matches Apple behavior)
@@ -946,7 +962,7 @@ final class KeyboardViewModel: ObservableObject {
             return
         }
 
-        let documentContext = context ?? (textDocumentProxy?.documentContextBeforeInput ?? "")
+        let documentContext = context ?? (proxyContextBefore() ?? "")
         if autocapitalizationType == .words {
             let shouldShift =
                 documentContext.isEmpty ||
@@ -973,9 +989,10 @@ final class KeyboardViewModel: ObservableObject {
     func startContinuousDelete() {
         stopContinuousDelete()
         lastPressCommit = nil
+        lastPressContext = nil
         triggerMediumHaptic()
         if !revertLastCorrection() {
-            textDocumentProxy?.deleteBackward()
+            deleteFromProxy()
         }
         lastSpaceTime = nil
 
@@ -983,13 +1000,16 @@ final class KeyboardViewModel: ObservableObject {
         // at a steady rate after a short delay. It never jumps to deleting whole
         // words, and the timer runs in the common modes so it keeps ticking while
         // the finger is down.
+        let generation = deleteGeneration
         let timer = Timer(
             fire: Date().addingTimeInterval(0.4),
             interval: 0.1,
             repeats: true
         ) { [weak self] _ in
             Task { @MainActor in
-                self?.textDocumentProxy?.deleteBackward()
+                guard let self, self.deleteGeneration == generation,
+                      self.backspaceTimer != nil else { return }
+                self.deleteFromProxy()
             }
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -997,15 +1017,15 @@ final class KeyboardViewModel: ObservableObject {
     }
 
     func stopContinuousDelete() {
+        deleteGeneration &+= 1
         backspaceTimer?.invalidate()
         backspaceTimer = nil
     }
 
     private func canReplaceDoubleSpace(in context: String) -> Bool {
         guard context.last == " " else { return false }
-        let characters = Array(context)
-        guard characters.count >= 2 else { return false }
-        let previousCharacter = characters[characters.count - 2]
+        var characters = context.reversed().makeIterator()
+        guard characters.next() != nil, let previousCharacter = characters.next() else { return false }
         return previousCharacter.isLetter || previousCharacter.isNumber
     }
 
@@ -1053,7 +1073,10 @@ final class KeyboardViewModel: ObservableObject {
 
     func moveCursor(byCharacterOffset offset: Int) {
         guard offset != 0 else { return }
-        textDocumentProxy?.adjustTextPosition(byCharacterOffset: offset)
+        invalidateTypingContext()
+        KeyboardPerformance.measure("ProxyMoveCursor") {
+            textDocumentProxy?.adjustTextPosition(byCharacterOffset: offset)
+        }
     }
 
     // MARK: - Dictation
@@ -1107,7 +1130,8 @@ final class KeyboardViewModel: ObservableObject {
 
         triggerMediumHaptic()
         lastPressCommit = nil
-        textDocumentProxy?.insertText(textForInsertion(consumed.text))
+        lastPressContext = nil
+        insertIntoProxy(textForInsertion(consumed.text))
         SharedDefaults.clearDictationSession()
         self.activeSessionID = nil
         refreshSharedState()
@@ -1228,7 +1252,7 @@ final class KeyboardViewModel: ObservableObject {
         }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty,
-              let previousCharacter = textDocumentProxy?.documentContextBeforeInput?.last
+              let previousCharacter = proxyContextBefore()?.last
         else {
             return text
         }
@@ -1302,8 +1326,8 @@ final class KeyboardViewModel: ObservableObject {
         // kind of field this is, and the text around the cursor.
         SharedDefaults.setDictationContext(
             surface: dictationSurfaceHint,
-            before: dictationSnippet(textDocumentProxy?.documentContextBeforeInput),
-            after: dictationSnippet(textDocumentProxy?.documentContextAfterInput)
+            before: dictationSnippet(proxyContextBefore()),
+            after: dictationSnippet(proxyContextAfter())
         )
 
         let sessionID = UUID().uuidString

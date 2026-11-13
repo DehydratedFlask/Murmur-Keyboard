@@ -3,6 +3,7 @@ import SwiftUI
 @main
 struct MurmurApp: App {
     @StateObject private var appState = AppState.shared
+    @StateObject private var capture = CaptureCoordinator()
     @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
     @AppStorage("appearanceMode") private var appearanceMode: String = AppearanceMode.auto.rawValue
     @Environment(\.scenePhase) private var scenePhase
@@ -30,6 +31,9 @@ struct MurmurApp: App {
             .animation(.easeInOut(duration: 0.35), value: hasCompletedOnboarding)
             .preferredColorScheme(AppearanceMode(rawValue: appearanceMode)?.colorScheme)
             .environmentObject(appState)
+            .environmentObject(capture)
+            .environmentObject(capture.recorder)
+            .environmentObject(capture.transcriptionService)
             .onOpenURL { url in
                 guard url.scheme == "murmur" else { return }
                 let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []

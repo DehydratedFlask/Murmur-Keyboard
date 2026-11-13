@@ -633,9 +633,9 @@ struct KeyboardView: View {
                     : "Touch and hold for alternate characters."
             ),
             onTouchDown: { viewModel.triggerLightHaptic() },
-            onInsert: { viewModel.insertAlternate($0) },
+            onInsert: { viewModel.insertAlternate($0, pressToken: $1) },
             onSelectionChange: { viewModel.triggerSelectionHaptic() },
-            onRetract: { viewModel.retractLastKeyPress() }
+            onRetract: { viewModel.retractKeyPress($0) }
         )
         .frame(maxWidth: .infinity)
         .frame(height: keyHeight)
@@ -664,9 +664,9 @@ struct KeyboardView: View {
                     : "Touch and hold for alternate characters."
             ),
             onTouchDown: { viewModel.triggerLightHaptic() },
-            onInsert: { viewModel.insertCharacter($0) },
+            onInsert: { viewModel.insertCharacter($0, pressToken: $1) },
             onSelectionChange: { viewModel.triggerSelectionHaptic() },
-            onRetract: { viewModel.retractLastKeyPress() }
+            onRetract: { viewModel.retractKeyPress($0) }
         )
         .frame(maxWidth: fixedWidth == nil ? .infinity : nil)
         .frame(width: fixedWidth)

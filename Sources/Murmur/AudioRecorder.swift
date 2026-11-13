@@ -492,35 +492,16 @@ final class AudioRecorder: ObservableObject {
         isRecording = false
         isPaused = false
 
-        // Keep the audio session active for the user's Session duration so the
-        // next dictation can start from the background (the keyboard's warm
-        // path). "Immediate" releases it straight away.
+        // Recording has stopped. Finalization owns a bounded background task;
+        // an idle microphone session is not a keep-alive mechanism.
+        warmSessionReleaseTask?.cancel()
         let sessionGeneration = audioSessionGeneration
-        let warmMinutes = MurmurPreferences.sessionDuration.minutes
-        if warmMinutes > 0 {
-            scheduleWarmSessionRelease(after: warmMinutes)
-        } else {
-            audioSessionGeneration = nil
-            // Avoid blocking the main actor while Core Audio tears down.
-            Task {
-                await Self.deactivateAudioSession(generation: sessionGeneration)
-            }
-        }
+        audioSessionGeneration = nil
+        Task { await Self.deactivateAudioSession(generation: sessionGeneration) }
 
         let url = recordingURL
         // The draft store owns the durable audio, including after an interruption.
         return url
-    }
-
-    private func scheduleWarmSessionRelease(after minutes: Int) {
-        warmSessionReleaseTask?.cancel()
-        warmSessionReleaseTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(Double(minutes) * 60))
-            guard !Task.isCancelled, let self else { return }
-            let generation = self.audioSessionGeneration
-            self.audioSessionGeneration = nil
-            await Self.deactivateAudioSession(generation: generation)
-        }
     }
 
     /// Releases the recorder's reference; only the draft store deletes recordings.
