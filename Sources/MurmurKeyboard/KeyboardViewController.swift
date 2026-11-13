@@ -137,16 +137,22 @@ class KeyboardViewController: UIInputViewController {
         super.textDidChange(textInput)
         viewModel.textDocumentProxy = textDocumentProxy
 
-        // One read of the field's text, shared by everything below: each proxy
-        // property is a round trip into the host app, and on a busy one those
-        // round trips are what made fast typing feel like it dropped keys.
+        // One read of the field's text, shared by everything below. Reading the
+        // rest of the traits here cost several more trips into the host app on
+        // every single keystroke, and a saturated main thread is what makes a
+        // fast typist feel keys disappear. Traits change when the field changes,
+        // which is what textWillChange is for.
         let context = textDocumentProxy.documentContextBeforeInput ?? ""
-        viewModel.refreshTextTraits(
-            interfaceStyle: traitCollection.userInterfaceStyle,
-            context: context
-        )
+        viewModel.refreshReturnKeyState(context: context)
         viewModel.autoCapitalize(context: context)
         viewModel.refreshSuggestions(context: context)
+    }
+
+    override func textWillChange(_ textInput: UITextInput?) {
+        super.textWillChange(textInput)
+        viewModel.textDocumentProxy = textDocumentProxy
+        viewModel.refreshTextTraits(interfaceStyle: traitCollection.userInterfaceStyle)
+        viewModel.autoCapitalize()
     }
 
     // MARK: - Pending Text Handling
@@ -298,6 +304,9 @@ final class KeyboardViewModel: ObservableObject {
     /// The autocorrection that a single delete press can still undo, exactly as
     /// Apple's keyboard restores the word you actually typed.
     private var lastCorrection: Correction?
+    /// What the press in progress typed, so a long press that opens the accent
+    /// palette can take it back.
+    private var lastPressCommit: String?
     private var suggestionTask: Task<Void, Never>?
 
     /// The proxy through which the keyboard inserts/deletes text.
@@ -401,8 +410,18 @@ final class KeyboardViewModel: ObservableObject {
         }
     }
 
-    func presentHandoffError(_ message: String) {
-        handoffError = message
+    /// The only trait that actually changes while typing. Re-reading the other
+    /// five from the host on every keystroke was latency, not information.
+    func refreshReturnKeyState(context: String) {
+        guard enablesReturnKeyAutomatically else {
+            if !returnKeyEnabled { returnKeyEnabled = true }
+            return
+        }
+        let enabled = !context.isEmpty
+        if returnKeyEnabled != enabled { returnKeyEnabled = enabled }
+    }
+
+    func presentHandoffError(_ message: String) {        handoffError = message
         handoffDismissTask?.cancel()
         handoffDismissTask = Task { @MainActor in
             try? await Task.sleep(for: .seconds(3))
@@ -493,6 +512,7 @@ final class KeyboardViewModel: ObservableObject {
     // KeyboardKey.swift), so nothing here clicks a second time on lift.
 
     func insertText(_ text: String) {
+        lastPressCommit = nil
         let textToInsert =
             (isUppercase || autocapitalizationType == .allCharacters)
                 ? text.uppercased()
@@ -517,18 +537,38 @@ final class KeyboardViewModel: ObservableObject {
         }
         textDocumentProxy?.insertText(character)
         lastSpaceTime = nil
+        lastPressCommit = character
     }
 
     func insertAlternate(_ character: String) {
         lastCorrection = nil
         textDocumentProxy?.insertText(character)
         lastSpaceTime = nil
+        lastPressCommit = character
         if isShifted && !isCapsLocked {
             isShifted = false
         }
     }
 
+    /// Undoes the character typed by a press that has turned into an accent
+    /// choice. Only removes text whose final character is still the one this
+    /// press inserted, so it can never eat anything else.
+    func retractLastKeyPress() {
+        guard let committed = lastPressCommit else { return }
+        lastPressCommit = nil
+        guard let proxy = textDocumentProxy,
+              let context = proxy.documentContextBeforeInput,
+              context.hasSuffix(committed)
+        else { return }
+
+        for _ in 0..<committed.count {
+            proxy.deleteBackward()
+        }
+        lastSpaceTime = nil
+    }
+
     func deleteBackward() {
+        lastPressCommit = nil
         if !revertLastCorrection() {
             textDocumentProxy?.deleteBackward()
         }
@@ -536,6 +576,7 @@ final class KeyboardViewModel: ObservableObject {
     }
 
     func insertSpace() {
+        lastPressCommit = nil
         // Double-space period shortcut (matches Apple behavior)
         let now = Date()
         let context = textDocumentProxy?.documentContextBeforeInput ?? ""
@@ -559,6 +600,7 @@ final class KeyboardViewModel: ObservableObject {
     }
 
     func insertReturn() {
+        lastPressCommit = nil
         autocorrectTrailingWord()
         textDocumentProxy?.insertText("\n")
         lastSpaceTime = nil
@@ -812,6 +854,7 @@ final class KeyboardViewModel: ObservableObject {
     /// in Apple's prediction bar does.
     func applySuggestion(_ suggestion: String) {
         suggestionTask?.cancel()
+        lastPressCommit = nil
         guard let proxy = textDocumentProxy,
               let context = proxy.documentContextBeforeInput,
               let word = Self.trailingWord(in: context)
@@ -880,6 +923,7 @@ final class KeyboardViewModel: ObservableObject {
 
     func startContinuousDelete() {
         stopContinuousDelete()
+        lastPressCommit = nil
         triggerMediumHaptic()
         if !revertLastCorrection() {
             textDocumentProxy?.deleteBackward()
@@ -1023,6 +1067,7 @@ final class KeyboardViewModel: ObservableObject {
         }
 
         triggerMediumHaptic()
+        lastPressCommit = nil
         textDocumentProxy?.insertText(textForInsertion(consumed.text))
         SharedDefaults.clearDictationSession()
         self.activeSessionID = nil
@@ -1198,17 +1243,30 @@ final class KeyboardViewModel: ObservableObject {
         warmFallbackTask = Task { @MainActor in
             try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled else { return }
-            guard activeSessionID == sessionID else { return }
-            // Only step in when the app still has not begun recording. A
-            // session that already moved on to processing (the user stopped
-            // before this fired) must never be reopened.
-            let phase = SharedDefaults.dictationState().phase
-            guard phase == .idle || phase == .preparing || phase == .failed else {
-                return
+            guard stillNeedsApp(for: sessionID) else { return }
+
+            // The app is alive but has not begun yet: nudge it once more and
+            // give it a moment. Opening it here used to race its own start and
+            // cancel it, which left nothing recording.
+            if SharedDefaults.isAppAlive() {
+                DarwinNotificationCenter.post(.dictationRequested)
+                try? await Task.sleep(for: .seconds(2.5))
+                guard !Task.isCancelled else { return }
+                guard stillNeedsApp(for: sessionID) else { return }
             }
+
             guard let url = URL(string: "murmur://dictate") else { return }
             openContainingApp(url)
         }
+    }
+
+    /// True only while the session exists and has not begun recording. A session
+    /// that already moved on to processing (the user stopped before this fired)
+    /// must never be reopened.
+    private func stillNeedsApp(for sessionID: String) -> Bool {
+        guard activeSessionID == sessionID else { return false }
+        let phase = SharedDefaults.dictationState().phase
+        return phase == .idle || phase == .preparing || phase == .failed
     }
 
     private func openContainingApp(_ url: URL) {

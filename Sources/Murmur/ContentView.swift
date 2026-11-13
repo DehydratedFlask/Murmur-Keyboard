@@ -1157,25 +1157,22 @@ struct ContentView: View {
 
     private func startRecording() async {
         clearErrorMessage()
+
+        // Activating the audio session is refused while the app is still coming
+        // to the foreground, which is exactly when a keyboard-initiated
+        // dictation starts. Wait for it to be active instead of failing.
+        var waited = 0
+        while UIApplication.shared.applicationState != .active, waited < 30 {
+            do {
+                try await Task.sleep(for: .milliseconds(100))
+            } catch {
+                return
+            }
+            waited += 1
+        }
+
         do {
             try await recorder.startRecording()
-            MurmurDictationLiveActivity.start()
-            if isDictationFromKeyboard, let keyboardDictationSessionID {
-                SharedDefaults.setDictationPhase(
-                    .recording,
-                    sessionID: keyboardDictationSessionID
-                )
-                keyboardCompletionMessage =
-                    "Recording started. Swipe back to your app, then tap the checkmark on Murmur’s keyboard."
-
-                // The request flag is persistent, so this also catches a stop
-                // signal delivered while the app was finishing startup.
-                if SharedDefaults.consumeDictationStopRequest(
-                    matching: keyboardDictationSessionID
-                ) {
-                    stopAndTranscribe()
-                }
-            }
         } catch is CancellationError {
             // A newer dictation request replaced this one — most often right
             // after stopping and starting again. Nothing failed, so nothing to
@@ -1185,13 +1182,57 @@ struct ContentView: View {
         } catch {
             if case RecordingError.noPermission = error {
                 showMicPermissionAlert = recorder.permissionDenied
+                handleRecordingStartFailure(error)
+                return
             }
-            let message = saneErrorText(error.localizedDescription)
-            if isDictationFromKeyboard {
-                signalKeyboardDictationAbandoned(reason: message)
+
+            // One silent recovery before bothering the user: a session iOS
+            // released while the app sat in the background is the usual reason a
+            // second dictation reports "couldn't start the microphone".
+            await recorder.recoverAudioSession()
+            do {
+                try await recorder.startRecording()
+            } catch is CancellationError {
+                return
+            } catch {
+                handleRecordingStartFailure(error)
+                return
             }
-            presentError(message)
         }
+        didStartRecording()
+    }
+
+    /// Everything that follows a successful start, shared by the first attempt
+    /// and the silent retry.
+    private func didStartRecording() {
+        MurmurDictationLiveActivity.start()
+        guard isDictationFromKeyboard, let keyboardDictationSessionID else { return }
+
+        SharedDefaults.setDictationPhase(
+            .recording,
+            sessionID: keyboardDictationSessionID
+        )
+        keyboardCompletionMessage =
+            "Recording started. Swipe back to your app, then tap the checkmark on Murmur’s keyboard."
+
+        // The request flag is persistent, so this also catches a stop signal
+        // delivered while the app was finishing startup.
+        if SharedDefaults.consumeDictationStopRequest(
+            matching: keyboardDictationSessionID
+        ) {
+            stopAndTranscribe()
+        }
+    }
+
+    private func handleRecordingStartFailure(_ error: Error) {
+        if case RecordingError.noPermission = error {
+            showMicPermissionAlert = recorder.permissionDenied
+        }
+        let message = saneErrorText(error.localizedDescription)
+        if isDictationFromKeyboard {
+            signalKeyboardDictationAbandoned(reason: message)
+        }
+        presentError(message)
     }
 
     /// Keeps the app-group heartbeat fresh while this process is alive, so the

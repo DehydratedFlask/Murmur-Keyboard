@@ -42,6 +42,9 @@ final class MurmurKeyCapView: UIView {
     var onTap: (() -> Void)?
     /// Fired on a completed tap (or accent choice) with the text to insert.
     var onInsert: ((String) -> Void)?
+    /// Fired when the accent palette takes over, so the character already typed
+    /// on touch-down can be taken back.
+    var onRetract: (() -> Void)?
     /// Fired when the accent palette selection moves.
     var onSelectionChange: (() -> Void)?
 
@@ -59,6 +62,8 @@ final class MurmurKeyCapView: UIView {
     private var isTrackingTouch = false
     private var isCancelled = false
     private var isHighlighted = false
+    /// True once this press has already typed its character on touch-down.
+    private var hasCommittedPress = false
 
     private var popupView: KeyPopupView?
     private var paletteView: KeyPaletteView?
@@ -185,17 +190,33 @@ final class MurmurKeyCapView: UIView {
     // MARK: - Touches
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        guard style.isEnabled, !isTrackingTouch, let touch = touches.first else {
-            return
+        guard style.isEnabled, let touch = touches.first else { return }
+
+        // A press whose end never arrived must not lock this key out forever.
+        // If nothing is on the screen any more, clear the stale state and treat
+        // this as a fresh press.
+        if isTrackingTouch {
+            guard event?.allTouches?.isEmpty != false else { return }
+            finishTouch()
         }
 
         activeTouch = touch
         isTrackingTouch = true
         isCancelled = false
+        hasCommittedPress = false
         touchOrigin = touch.location(in: self)
 
         setHighlighted(true)
         onTouchDown?()
+
+        // Type on touch-down. Waiting for the lift meant every lost touch-up —
+        // a touch the system cancelled, a view rebuilt mid-press, a busy main
+        // thread — dropped the character. The character is typed the moment the
+        // finger lands; holding for an accent takes it back again below.
+        if let insertText = style.insertText {
+            onInsert?(insertText)
+            hasCommittedPress = true
+        }
 
         if style.showsPopup, !style.title.isEmpty {
             showPopup()
@@ -208,30 +229,17 @@ final class MurmurKeyCapView: UIView {
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         guard isTrackingTouch,
               let touch = touches.first,
-              touch === activeTouch
+              touch === activeTouch,
+              let paletteView
         else { return }
 
-        if let paletteView {
-            let index = paletteView.index(at: touch.location(in: paletteView))
-            if index != selectedAlternate {
-                selectedAlternate = index
-                paletteView.select(index: index)
-                if index >= 0 {
-                    onSelectionChange?()
-                }
+        let index = paletteView.index(at: touch.location(in: paletteView))
+        if index != selectedAlternate {
+            selectedAlternate = index
+            paletteView.select(index: index)
+            if index >= 0 {
+                onSelectionChange?()
             }
-            return
-        }
-
-        let point = touch.location(in: self)
-        let dx = point.x - touchOrigin.x
-        let dy = point.y - touchOrigin.y
-        if !isCancelled, (dx * dx + dy * dy) > 48 * 48 {
-            // Apple cancels a key once the finger has wandered off it.
-            isCancelled = true
-            setHighlighted(false)
-            dismissOverlays()
-            finishTouch()
         }
     }
 
@@ -245,12 +253,9 @@ final class MurmurKeyCapView: UIView {
             if selectedAlternate >= 0, selectedAlternate < style.alternatives.count {
                 onInsert?(style.alternatives[selectedAlternate])
             }
-        } else if !isCancelled {
-            if let insertText = style.insertText {
-                onInsert?(insertText)
-            } else {
-                onTap?()
-            }
+        } else if style.insertText == nil {
+            // Mode keys (shift, 123, return) still act on release.
+            onTap?()
         }
 
         finishTouch()
@@ -259,14 +264,8 @@ final class MurmurKeyCapView: UIView {
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
         guard isTrackingTouch else { return }
 
-        // The system cancels touches it takes over — its own keyboard gestures,
-        // the host closing the field. That is not the user changing their mind,
-        // so a key that was never dragged away still types instead of being
-        // swallowed.
-        if !isCancelled, paletteView == nil, let insertText = style.insertText {
-            onInsert?(insertText)
-        }
-
+        // The character is already typed; a system cancel (its own gestures
+        // taking over, the host closing the field) simply ends the press.
         isCancelled = true
         finishTouch()
     }
@@ -275,6 +274,7 @@ final class MurmurKeyCapView: UIView {
         guard isTrackingTouch else { return }
         isTrackingTouch = false
         activeTouch = nil
+        hasCommittedPress = false
         paletteTask?.cancel()
         paletteTask = nil
         setHighlighted(false)
@@ -321,6 +321,13 @@ final class MurmurKeyCapView: UIView {
     }
 
     private func showPalette() {
+        // The base character was already typed on touch-down; take it back so
+        // the accent the user picks replaces it rather than following it.
+        if hasCommittedPress {
+            hasCommittedPress = false
+            onRetract?()
+        }
+
         let palette = paletteView ?? KeyPaletteView()
         palette.configure(
             items: style.alternatives,
@@ -525,6 +532,7 @@ struct KeyboardKey: UIViewRepresentable {
     var onTap: (() -> Void)?
     var onInsert: ((String) -> Void)?
     var onSelectionChange: (() -> Void)?
+    var onRetract: (() -> Void)?
 
     func makeUIView(context: Context) -> MurmurKeyCapView {
         let view = MurmurKeyCapView()
@@ -556,5 +564,6 @@ struct KeyboardKey: UIViewRepresentable {
         view.onTap = onTap
         view.onInsert = onInsert
         view.onSelectionChange = onSelectionChange
+        view.onRetract = onRetract
     }
 }

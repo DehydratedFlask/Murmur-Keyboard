@@ -578,7 +578,8 @@ struct KeyboardView: View {
             ),
             onTouchDown: { viewModel.triggerLightHaptic() },
             onInsert: { viewModel.insertAlternate($0) },
-            onSelectionChange: { viewModel.triggerSelectionHaptic() }
+            onSelectionChange: { viewModel.triggerSelectionHaptic() },
+            onRetract: { viewModel.retractLastKeyPress() }
         )
         .frame(maxWidth: .infinity)
         .frame(height: keyHeight)
@@ -608,7 +609,8 @@ struct KeyboardView: View {
             ),
             onTouchDown: { viewModel.triggerLightHaptic() },
             onInsert: { viewModel.insertCharacter($0) },
-            onSelectionChange: { viewModel.triggerSelectionHaptic() }
+            onSelectionChange: { viewModel.triggerSelectionHaptic() },
+            onRetract: { viewModel.retractLastKeyPress() }
         )
         .frame(maxWidth: fixedWidth == nil ? .infinity : nil)
         .frame(width: fixedWidth)

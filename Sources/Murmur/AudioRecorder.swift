@@ -220,12 +220,28 @@ final class AudioRecorder: ObservableObject {
     /// thread as a hang risk and may abort the process in Simulator.
     ///
     /// Starting fails often enough in real use — the previous dictation's
-    /// session still releasing, a call or another app holding the microphone, a
-    /// route change — that a single failed attempt is not worth bothering the
-    /// user with. The whole audio stack is torn down and rebuilt before one more
-    /// attempt, which is what the old "Try again" did by hand.
+    /// session still releasing, the app having been in the background while iOS
+    /// tore the session down, a call or another app holding the microphone, a
+    /// route change — that one failed attempt is not worth bothering the user
+    /// with. Each retry rebuilds the whole audio stack and waits longer, which
+    /// is what the old "Try again" button did by hand.
     func startRecording() async throws {
-        guard !isRecording, !isStarting else { return }
+        // If another start is already in flight, wait for it instead of
+        // returning as though this one had succeeded. The keyboard's warm
+        // request and its redirect fallback can both arrive; silently returning
+        // left nothing recording and looked like "the microphone failed".
+        while isStarting {
+            try? await Task.sleep(for: .milliseconds(50))
+            try Task.checkCancellation()
+        }
+
+        // A session the system released while the app was backgrounded can
+        // leave this flag set with no engine behind it. Heal that instead of
+        // silently ignoring the new request and making the keyboard time out.
+        if isRecording {
+            stopRecording()
+            cleanupRecording()
+        }
         isStarting = true
         defer { isStarting = false }
 
@@ -242,7 +258,8 @@ final class AudioRecorder: ObservableObject {
         }
 
         var lastError: Error?
-        for attempt in 0..<2 {
+        let attempts = 3
+        for attempt in 0..<attempts {
             do {
                 try await startEngine()
                 return
@@ -252,15 +269,26 @@ final class AudioRecorder: ObservableObject {
                 lastError = error
             }
 
-            // Release everything and give iOS a moment to hand the input back.
-            audioSessionGeneration = nil
-            await Self.deactivateAudioSession(generation: nil)
-            if attempt == 0 {
-                try? await Task.sleep(for: .milliseconds(300))
+            await resetAudioStack()
+            if attempt < attempts - 1 {
+                try? await Task.sleep(for: .milliseconds(250 * (attempt + 1)))
             }
         }
 
         throw (lastError as? RecordingError) ?? RecordingError.engineStartFailed
+    }
+
+    /// Tears the engine, tap and session down to a known-empty state before the
+    /// next attempt, so a half-configured stack cannot poison the retry.
+    func resetAudioStack() async {
+        if let engine = audioEngine {
+            engine.inputNode.removeTap(onBus: 0)
+            engine.stop()
+        }
+        audioEngine = nil
+        isRecording = false
+        audioSessionGeneration = nil
+        await Self.deactivateAudioSession(generation: nil)
     }
 
     /// One attempt at activating the session, wiring the input tap and starting
@@ -276,7 +304,15 @@ final class AudioRecorder: ObservableObject {
             try Task.checkCancellation()
 
             let inputNode = engine.inputNode
-            let inputFormat = inputNode.outputFormat(forBus: 0)
+            var inputFormat = inputNode.outputFormat(forBus: 0)
+
+            // Returning from the background, the input route needs a moment to
+            // settle; reading it too early reports a 0 Hz format and fails a
+            // start that would have worked a heartbeat later.
+            if inputFormat.sampleRate <= 0 || inputFormat.channelCount == 0 {
+                try? await Task.sleep(for: .milliseconds(150))
+                inputFormat = inputNode.outputFormat(forBus: 0)
+            }
 
             // Guard against invalid format (e.g. simulator with no mic hardware)
             guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
@@ -484,8 +520,7 @@ final class AudioRecorder: ObservableObject {
     /// shown when the microphone couldn't be started.
     func recoverAudioSession() async {
         warmSessionReleaseTask?.cancel()
-        audioSessionGeneration = nil
-        await Self.deactivateAudioSession(generation: nil)
+        await resetAudioStack()
         audioSessionGeneration = try? await Self.activateAudioSessionWithRetry()
     }
 
