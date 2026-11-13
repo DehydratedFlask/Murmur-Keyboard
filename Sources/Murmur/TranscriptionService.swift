@@ -195,16 +195,23 @@ final class TranscriptionService: ObservableObject {
     /// Transcribes audio from the file at the given URL with the active engine.
     /// - Parameter audioURL: Path to a WAV/M4A audio file.
     /// - Returns: Raw transcription text.
-    func transcribe(audioURL: URL) async throws -> String {
+    func transcribe(audioURL: URL, languageCode: String?) async throws -> String {
+        try Task.checkCancellation()
+        if modelState == .unloaded || modelState.isError { await loadModel() }
+        // Cloud fallback may arrive while the initial local model is still loading.
+        while modelState == .loading || isTranscribing {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        try Task.checkCancellation()
         switch selectedEngine {
         case .whisper:
-            return try await transcribeWithWhisper(audioURL: audioURL)
+            return try await transcribeWithWhisper(audioURL: audioURL, languageCode: languageCode)
         case .parakeet:
-            return try await transcribeWithParakeet(audioURL: audioURL)
+            return try await transcribeWithParakeet(audioURL: audioURL, languageCode: languageCode)
         }
     }
 
-    private func transcribeWithParakeet(audioURL: URL) async throws -> String {
+    private func transcribeWithParakeet(audioURL: URL, languageCode: String?) async throws -> String {
         guard modelState == .loaded else {
             throw TranscriptionError.modelNotLoaded
         }
@@ -214,11 +221,11 @@ final class TranscriptionService: ObservableObject {
 
         return try await parakeet.transcribe(
             audioURL: audioURL,
-            languageCode: MurmurPreferences.primaryLanguageCode
+            languageCode: languageCode
         )
     }
 
-    private func transcribeWithWhisper(audioURL: URL) async throws -> String {
+    private func transcribeWithWhisper(audioURL: URL, languageCode: String?) async throws -> String {
         guard let whisperKit = whisperKit, modelState == .loaded else {
             throw TranscriptionError.modelNotLoaded
         }
@@ -229,7 +236,7 @@ final class TranscriptionService: ObservableObject {
         let wrapper = UnsafeSendableBox(whisperKit)
         let path = audioURL.path
         let dictionary = PersonalDictionary.enabledEntries
-        let language = MurmurPreferences.primaryLanguageCode
+        let language = languageCode
         let fullText = try await Self.runTranscription(
             kit: wrapper,
             audioPath: path,

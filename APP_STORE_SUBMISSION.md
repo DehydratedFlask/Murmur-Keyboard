@@ -14,7 +14,7 @@ Keyboard - AI Powered" (App Store ID 6761157714) instead of creating a new app:
 | Murmur | `com.murmurkeyboard.app` |
 | MurmurKeyboard | `com.murmurkeyboard.app.keyboard` |
 | MurmurWidget | `com.murmurkeyboard.app.widget` |
-| App Group (all three) | `group.com.murmur.dictation` |
+| App Group (app and keyboard) | `group.murmurkeyboard.shared` |
 
 Things this changes:
 
@@ -25,11 +25,9 @@ Things this changes:
   they are. Check the identifier the 2.3 build actually shipped: if it differed
   from `com.murmurkeyboard.app.keyboard`, keep the shipped one so the update
   does not leave an orphaned keyboard in Settings.
-- **The App Group is unchanged** (`group.com.murmur.dictation`, already
-  registered on the account). Users updating from 2.3 keep a working app and
-  keyboard, but transcripts and snippets stored under the 2.3 group are not
-  migrated. To carry them over, change the group in both entitlement files and
-  in `SharedDefaults.appGroupID` to the one 2.3 used.
+- **The App Group matches the 2.3 source.** History and snippets are stored in
+  the app's Documents directory; history defaults to being kept indefinitely
+  unless the user chooses a shorter retention period.
 
 ## Uploading
 
@@ -51,7 +49,7 @@ Things this changes:
 - [x] `ITSAppUsesNonExemptEncryption` = false (standard HTTPS only)
 - [x] Privacy manifest (`PrivacyInfo.xcprivacy`) in app and keyboard
 - [x] Microphone usage description
-- [x] App Group entitlement on app, keyboard and widget
+- [x] App Group entitlement on app and keyboard
 - [x] Keyboard extension declares `RequestsOpenAccess`
 - [x] Bundle identifiers match the live record
 - [ ] Screenshots for the 6.9" iPhone (1320 × 2868) — recheck

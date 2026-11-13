@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		B245917182578C8E8B5ED9D9 /* DictationIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA4E47EBB25F17F21AFED6C9 /* DictationIntents.swift */; };
+		C6F1E8F88B914112B7FFD7BE /* TranscriptEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83E630941DEB76331065AD9B /* TranscriptEditorView.swift */; };
+		7DF84EE4AE181DF4B9E0D430 /* RecordingDraftStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = E739EF1FADFE80736765782E /* RecordingDraftStore.swift */; };
 		04CB3735D6F4B13A618988F1 /* KeyboardViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D9B6369C3F5E2AFE775F256 /* KeyboardViewController.swift */; };
 		0709B9D315755E7B821D9759 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E49B8BFD4899D49213E66351 /* ContentView.swift */; };
 		0D2E35D28D901F63E2FF6E94 /* KeyboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4613EE0D4740D47B11050CDB /* KeyboardView.swift */; };
@@ -69,6 +72,9 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		FA4E47EBB25F17F21AFED6C9 /* DictationIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictationIntents.swift; sourceTree = "<group>"; };
+		83E630941DEB76331065AD9B /* TranscriptEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptEditorView.swift; sourceTree = "<group>"; };
+		E739EF1FADFE80736765782E /* RecordingDraftStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingDraftStore.swift; sourceTree = "<group>"; };
 		05AD0D5776C091609CEE64DC /* MurmurKeyboard.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = MurmurKeyboard.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		1A7366E26F2E6709D6679C88 /* TextProcessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextProcessor.swift; sourceTree = "<group>"; };
 		6B2E9C4A1D7F3058E2A4C9D1 /* SpeechSegmenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechSegmenter.swift; sourceTree = "<group>"; };
@@ -171,6 +177,9 @@
 		C069B21BE9D463290D39AC6C /* Murmur */ = {
 			isa = PBXGroup;
 			children = (
+				FA4E47EBB25F17F21AFED6C9 /* DictationIntents.swift */,
+				83E630941DEB76331065AD9B /* TranscriptEditorView.swift */,
+				E739EF1FADFE80736765782E /* RecordingDraftStore.swift */,
 				FBF74434C602C47E5BAA6CED /* Assets.xcassets */,
 				DD15486FE9E2405472EDB018 /* AudioRecorder.swift */,
 				1DC6424CB3B8F16902AB37D2 /* CloudTranscriptionService.swift */,
@@ -328,6 +337,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B245917182578C8E8B5ED9D9 /* DictationIntents.swift in Sources */,
+				C6F1E8F88B914112B7FFD7BE /* TranscriptEditorView.swift in Sources */,
+				7DF84EE4AE181DF4B9E0D430 /* RecordingDraftStore.swift in Sources */,
 				3FB2E1F1BC1D7801B402C165 /* AudioRecorder.swift in Sources */,
 				7801BBB826DED11D57466728 /* CloudTranscriptionService.swift in Sources */,
 				0709B9D315755E7B821D9759 /* ContentView.swift in Sources */,

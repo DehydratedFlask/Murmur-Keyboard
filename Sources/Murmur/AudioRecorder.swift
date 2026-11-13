@@ -2,6 +2,40 @@
 import Accelerate
 import Foundation
 
+/// The audio callback and preview task exchange copied samples under this lock.
+/// At most twenty seconds are retained; a preview never grows with session length.
+private final class PreviewAudioBuffer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var chunks: [[Float]] = []
+    private var sampleCount = 0
+    private let maximumSamples = 20 * 16_000
+
+    func append(_ buffer: AVAudioPCMBuffer) {
+        guard let channel = buffer.floatChannelData?[0], buffer.frameLength > 0 else { return }
+        let values = Array(UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength)))
+        lock.lock()
+        defer { lock.unlock() }
+        chunks.append(values)
+        sampleCount += values.count
+        while sampleCount > maximumSamples, chunks.count > 1 {
+            sampleCount -= chunks.removeFirst().count
+        }
+    }
+
+    func snapshot() -> [Float] {
+        lock.lock()
+        defer { lock.unlock() }
+        return chunks.flatMap { $0 }
+    }
+
+    func reset() {
+        lock.lock()
+        defer { lock.unlock() }
+        chunks.removeAll(keepingCapacity: true)
+        sampleCount = 0
+    }
+}
+
 private actor AudioSessionCoordinator {
     static let shared = AudioSessionCoordinator()
 
@@ -39,6 +73,7 @@ final class AudioRecorder: ObservableObject {
     // MARK: - Published State
 
     @Published private(set) var isRecording = false
+    @Published private(set) var isPaused = false
     @Published private(set) var isStarting = false
     @Published private(set) var hasPermission = false
     @Published private(set) var permissionDenied = false
@@ -53,6 +88,7 @@ final class AudioRecorder: ObservableObject {
     private var audioEngine: AVAudioEngine?
     private var recordingURL: URL?
     private var audioSessionGeneration: Int?
+    private let previewAudio = PreviewAudioBuffer()
     private nonisolated(unsafe) var interruptionObserver: (any NSObjectProtocol)?
     private nonisolated(unsafe) var routeChangeObserver: (any NSObjectProtocol)?
 
@@ -69,7 +105,7 @@ final class AudioRecorder: ObservableObject {
     private let vadSpeechThreshold: Float = 0.015
 
     /// How long silence must persist after speech to trigger auto-stop (seconds).
-    private let vadSilenceDuration: TimeInterval = 10.0
+    var vadSilenceDuration: TimeInterval = 10.0
 
     /// Minimum recording duration before VAD can auto-stop (seconds).
     /// Prevents premature stops during brief pauses at the start.
@@ -159,9 +195,9 @@ final class AudioRecorder: ObservableObject {
     }
 
     private func finishInterruptedRecording(with error: RecordingError) {
-        lastInterruptionError = error.errorDescription
         stopRecording()
-        cleanupRecording()
+        // The draft store owns deletion. Publish only after the file is closed.
+        lastInterruptionError = error.errorDescription
     }
 
     // MARK: - Permission
@@ -225,7 +261,7 @@ final class AudioRecorder: ObservableObject {
     /// route change — that one failed attempt is not worth bothering the user
     /// with. Each retry rebuilds the whole audio stack and waits longer, which
     /// is what the old "Try again" button did by hand.
-    func startRecording() async throws {
+    func startRecording(to destinationURL: URL) async throws {
         // If another start is already in flight, wait for it instead of
         // returning as though this one had succeeded. The keyboard's warm
         // request and its redirect fallback can both arrive; silently returning
@@ -238,10 +274,7 @@ final class AudioRecorder: ObservableObject {
         // A session the system released while the app was backgrounded can
         // leave this flag set with no engine behind it. Heal that instead of
         // silently ignoring the new request and making the keyboard time out.
-        if isRecording {
-            stopRecording()
-            cleanupRecording()
-        }
+        guard !isRecording else { return }
         isStarting = true
         defer { isStarting = false }
 
@@ -250,6 +283,7 @@ final class AudioRecorder: ObservableObject {
         vadHasDetectedSpeech = false
         vadSilenceStart = nil
         vadRecordingStart = Date()
+        previewAudio.reset()
         cleanupRecording()
         warmSessionReleaseTask?.cancel()
 
@@ -261,7 +295,7 @@ final class AudioRecorder: ObservableObject {
         let attempts = 3
         for attempt in 0..<attempts {
             do {
-                try await startEngine()
+                try await startEngine(to: destinationURL)
                 return
             } catch is CancellationError {
                 throw CancellationError()
@@ -287,13 +321,14 @@ final class AudioRecorder: ObservableObject {
         }
         audioEngine = nil
         isRecording = false
+        isPaused = false
         audioSessionGeneration = nil
         await Self.deactivateAudioSession(generation: nil)
     }
 
     /// One attempt at activating the session, wiring the input tap and starting
     /// the engine. Cleans up after itself on failure.
-    private func startEngine() async throws {
+    private func startEngine(to url: URL) async throws {
         audioSessionGeneration = try await Self.activateAudioSessionWithRetry()
 
         let engine = AVAudioEngine()
@@ -329,9 +364,6 @@ final class AudioRecorder: ObservableObject {
                 AVLinearPCMIsBigEndianKey: false
             ]
 
-            let url = FileManager.default.temporaryDirectory
-                .appendingPathComponent(UUID().uuidString)
-                .appendingPathExtension("wav")
             temporaryURL = url
 
             let file = try AVAudioFile(forWriting: url, settings: outputSettings)
@@ -354,6 +386,7 @@ final class AudioRecorder: ObservableObject {
                 outputFormat: outputFormat,
                 converter: converter,
                 file: file,
+                previewAudio: previewAudio,
                 vadEnabled: vadEnabled,
                 speechThreshold: vadSpeechThreshold,
                 silenceDuration: vadSilenceDuration,
@@ -402,6 +435,7 @@ final class AudioRecorder: ObservableObject {
         outputFormat: AVAudioFormat,
         converter: AVAudioConverter,
         file: AVAudioFile,
+        previewAudio: PreviewAudioBuffer,
         vadEnabled: Bool,
         speechThreshold: Float,
         silenceDuration: TimeInterval,
@@ -428,8 +462,13 @@ final class AudioRecorder: ObservableObject {
 
             do {
                 try file.write(from: convertedBuffer)
+                previewAudio.append(convertedBuffer)
             } catch {
-                // Silently handle write errors during recording
+                Task { @MainActor [weak recorder] in
+                    guard let recorder, recorder.isRecording else { return }
+                    recorder.stopRecording()
+                    recorder.lastInterruptionError = "The recording could not be written. The audio captured so far has been kept."
+                }
             }
 
             // --- Voice Activity Detection ---
@@ -451,6 +490,7 @@ final class AudioRecorder: ObservableObject {
         audioEngine?.stop()
         audioEngine = nil
         isRecording = false
+        isPaused = false
 
         // Keep the audio session active for the user's Session duration so the
         // next dictation can start from the background (the keyboard's warm
@@ -468,9 +508,7 @@ final class AudioRecorder: ObservableObject {
         }
 
         let url = recordingURL
-        // Note: recordingURL is intentionally NOT cleared here.
-        // cleanupRecording() owns deletion + clearing so that
-        // interruption / route-change callers can still remove the temp file.
+        // The draft store owns the durable audio, including after an interruption.
         return url
     }
 
@@ -485,12 +523,51 @@ final class AudioRecorder: ObservableObject {
         }
     }
 
-    /// Cleans up any temporary recording files.
+    /// Releases the recorder's reference; only the draft store deletes recordings.
     func cleanupRecording() {
-        if let url = recordingURL {
-            try? FileManager.default.removeItem(at: url)
-            recordingURL = nil
-        }
+        recordingURL = nil
+        previewAudio.reset()
+    }
+
+    func pauseRecording() {
+        guard isRecording, !isPaused else { return }
+        audioEngine?.pause()
+        isPaused = true
+    }
+
+    func resumeRecording() throws {
+        guard isRecording, isPaused, let engine = audioEngine else { return }
+        vadHasDetectedSpeech = false
+        vadSilenceStart = nil
+        vadRecordingStart = Date()
+        vadDidAutoStop = false
+        try engine.start()
+        isPaused = false
+    }
+
+    /// A bounded recent-speech window, copied off the realtime callback.
+    func previewSnapshot() async throws -> URL? {
+        let samples = previewAudio.snapshot()
+        guard samples.count >= 16_000 else { return nil }
+        return try await Task.detached(priority: .utility) { () throws -> URL? in
+            try Task.checkCancellation()
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathExtension("wav")
+            do {
+                let format = AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1)!
+                guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count)),
+                      let channel = buffer.floatChannelData?[0] else { return nil }
+                buffer.frameLength = AVAudioFrameCount(samples.count)
+                samples.withUnsafeBufferPointer { source in
+                    channel.update(from: source.baseAddress!, count: samples.count)
+                }
+                let file = try AVAudioFile(forWriting: url, settings: format.settings)
+                try file.write(from: buffer)
+                return url
+            } catch {
+                try? FileManager.default.removeItem(at: url)
+                throw error
+            }
+        }.value
     }
 
     private nonisolated static func activateAudioSession() async throws -> Int {
@@ -563,7 +640,7 @@ final class AudioRecorder: ObservableObject {
                 vadHasDetectedSpeech = false
                 vadSilenceStart = nil
                 Task { @MainActor [weak self] in
-                    guard let self, self.isRecording else { return }
+                    guard let self, self.isRecording, !self.isPaused else { return }
                     self.vadDidAutoStop = true
                 }
             }

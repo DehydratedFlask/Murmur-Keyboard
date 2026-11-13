@@ -1,6 +1,6 @@
 # Murmur - Privacy Policy
 
-**Last updated:** July 24, 2026
+**Last updated:** November 13, 2026
 
 ## Overview
 
@@ -29,8 +29,11 @@ transcriptions for advertising or tracking.** Specifically:
 
 Murmur requests microphone permission so you can record speech for
 transcription inside the app. Audio is used only while you are actively
-dictating and is discarded by Murmur after processing. It remains on-device
-unless you have enabled cloud dictation.
+dictating. Audio is saved locally as a recoverable recording until its transcript
+has been saved successfully or you explicitly discard the recording. Interrupted
+and failed recordings remain in the app's Saved recordings section for retry or
+discard. Recovery audio is excluded from device backups. It remains on-device
+unless you enable cloud dictation or explicitly export a recording.
 
 ## Optional Cloud Dictation
 
@@ -62,8 +65,15 @@ On first launch, Murmur may download the selected Whisper model over **HTTPS** s
 
 ## Data Storage
 
-Murmur keeps recent transcription history and your personal dictionary
-on-device so you can view past dictations and manage preferred spellings. This
+Murmur keeps transcription history (including original recognition output,
+polished text, and your saved edits), recoverable recordings, snippets, and your
+personal dictionary on-device so you can view past dictations and manage
+preferred spellings. History retention applies to all text versions of an entry;
+saved recovery recordings remain until transcribed successfully or discarded.
+Live preview processes a bounded recent-audio window locally and shares only
+session-scoped provisional text with the keyboard. Keyboard style and language
+preferences are shared locally through the App Group. Dictate to Clipboard
+copies your finished text to the system clipboard when Murmur is active. This
 data stays on your device unless you copy or share text yourself, or enable
 cloud dictation as described above. Murmur does not maintain a remote database
 of your content.

@@ -8,6 +8,7 @@ struct MurmurDictationAttributes: ActivityAttributes, Sendable {
     struct ContentState: Codable, Hashable, Sendable {
         /// When dictation started; the island renders a live timer from this.
         var startedAt: Date
+        var isPaused: Bool = false
     }
 
     /// Shown on the Lock Screen / expanded island.
@@ -42,6 +43,16 @@ enum MurmurDictationLiveActivity {
         Task {
             for activity in Activity<MurmurDictationAttributes>.activities {
                 await activity.end(nil, dismissalPolicy: .immediate)
+            }
+        }
+    }
+
+    static func setPaused(_ paused: Bool) {
+        Task {
+            for activity in Activity<MurmurDictationAttributes>.activities {
+                var state = activity.content.state
+                state.isPaused = paused
+                await activity.update(ActivityContent(state: state, staleDate: Date().addingTimeInterval(15 * 60)))
             }
         }
     }

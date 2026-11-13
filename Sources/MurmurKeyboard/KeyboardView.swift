@@ -119,18 +119,7 @@ struct KeyboardView: View {
     /// keyboard.
     private var toolbarRow: some View {
         HStack(spacing: 8) {
-            Button {
-                viewModel.openMurmurApp()
-            } label: {
-                Image(systemName: "line.3.horizontal")
-                    .font(.system(size: 19, weight: .semibold))
-                    .foregroundStyle(toolbarForeground)
-                    .frame(width: 40, height: 34)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Open Murmur")
-            .accessibilityHint("Opens the Murmur app.")
+            dictationOptionsMenu
 
             if let suggestion = viewModel.suggestions.first {
                 suggestionChip(suggestion)
@@ -145,6 +134,52 @@ struct KeyboardView: View {
         .padding(.top, 8)
         .padding(.bottom, 4)
         .frame(height: predictionRowHeight + 12)
+    }
+
+    private var dictationOptionsMenu: some View {
+        Menu {
+            Button("Open Murmur", systemImage: "arrow.up.forward.app") { viewModel.openMurmurApp() }
+            Menu("Formatting style") {
+                ForEach(["automatic", "general", "chat", "email", "notes", "search", "verbatim"], id: \.self) { style in
+                    Button {
+                        viewModel.setFormattingStyle(style)
+                    } label: {
+                        if style == viewModel.formattingStyle {
+                            Label(style.capitalized, systemImage: "checkmark")
+                        } else {
+                            Text(style.capitalized)
+                        }
+                    }
+                }
+            }
+            .disabled(!viewModel.hasFullAccess)
+            Menu("Dictation language") {
+                Button {
+                    viewModel.setDictationLanguage("auto")
+                } label: {
+                    if viewModel.dictationLanguage == "auto" { Label("Automatic", systemImage: "checkmark") }
+                    else { Text("Automatic") }
+                }
+                ForEach(SharedDefaults.languageNames.keys.sorted(), id: \.self) { code in
+                    Button {
+                        viewModel.setDictationLanguage(code)
+                    } label: {
+                        let title = SharedDefaults.languageNames[code] ?? code
+                        if viewModel.dictationLanguage == code { Label(title, systemImage: "checkmark") }
+                        else { Text(title) }
+                    }
+                }
+            }
+            .disabled(!viewModel.hasFullAccess)
+        } label: {
+            Image(systemName: "slider.horizontal.3")
+                .font(.system(size: 19, weight: .semibold))
+                .foregroundStyle(toolbarForeground)
+                .frame(width: 40, height: 34)
+                .contentShape(Rectangle())
+        }
+        .accessibilityLabel("Dictation options")
+        .accessibilityValue("\(viewModel.formattingStyle.capitalized), \(viewModel.dictationLanguage == "auto" ? "Automatic language" : SharedDefaults.languageNames[viewModel.dictationLanguage] ?? viewModel.dictationLanguage)")
     }
 
     /// The correction the keyboard would make, shown before it happens — the
@@ -271,8 +306,8 @@ struct KeyboardView: View {
     // MARK: - Dictation Panel
 
     /// Full-width recording surface shown while Murmur owns the microphone.
-    /// Cancel on the left, confirm on the right, live waveform in the middle —
-    /// the arrangement Wispr Flow uses, minus its live transcript.
+    /// Cancel, pause/resume, provisional recent speech, and final review share
+    /// the same session-bound recording surface.
     private var dictationPanel: some View {
         VStack(spacing: 0) {
             HStack(spacing: 0) {
@@ -294,15 +329,27 @@ struct KeyboardView: View {
 
                 Spacer(minLength: 0)
 
+                if viewModel.dictationPhase == .recording || viewModel.dictationPhase == .paused {
+                    panelControl(
+                        systemImage: viewModel.dictationPhase == .paused ? "play.fill" : "pause.fill",
+                        isPrimary: false, enabled: true,
+                        label: viewModel.dictationPhase == .paused ? "Resume recording" : "Pause recording",
+                        hint: "Pauses or resumes this recording."
+                    ) { viewModel.toggleRecordingPause() }
+                    Spacer(minLength: 0)
+                }
+
                 panelControl(
                     systemImage: viewModel.dictationPhase == .failed ? "arrow.clockwise" : "checkmark",
                     isPrimary: true,
                     enabled: viewModel.dictationPhase == .recording
+                        || viewModel.dictationPhase == .paused
+                        || viewModel.dictationPhase == .ready
                         || viewModel.dictationPhase == .preparing
                         || viewModel.dictationPhase == .failed,
-                    label: viewModel.dictationPhase == .failed ? "Try again" : "Finish dictation",
+                    label: viewModel.dictationPhase == .failed ? "Try again" : (viewModel.dictationPhase == .ready ? "Insert dictation" : "Finish dictation"),
                     hint: viewModel.dictationPhase == .failed
-                        ? "Releases the microphone and starts again."
+                        ? "Starts a new recording. Saved recordings can be retried in Murmur."
                         : "Murmur transcribes, cleans up and inserts the result."
                 ) {
                     if viewModel.dictationPhase == .failed {
@@ -327,37 +374,35 @@ struct KeyboardView: View {
         .transition(.opacity)
     }
 
-    @ViewBuilder
     private var panelStatus: some View {
-        VStack(spacing: 12) {
-            switch viewModel.dictationPhase {
-            case .processing:
-                ProgressView()
-                    .tint(murmurAccent)
-                    .scaleEffect(1.25)
-                    .frame(height: 56)
-            default:
-                ListeningWaveform(
-                    isActive: viewModel.dictationPhase == .recording,
-                    tint: panelForeground
-                )
+        VStack(spacing: 8) {
+            if viewModel.dictationPhase == .processing {
+                ProgressView().tint(murmurAccent)
+            } else if viewModel.displayedDictationText.isEmpty {
+                ListeningWaveform(isActive: viewModel.dictationPhase == .recording, tint: panelForeground)
+                    .frame(height: 45)
             }
-
-            VStack(spacing: 4) {
-                Text(panelTitle)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(panelForeground)
-
-                if let detail = panelDetail {
-                    Text(detail)
-                        .font(.system(size: 12))
-                        .foregroundStyle(panelForeground.opacity(0.62))
-                        .multilineTextAlignment(.center)
-                        .lineLimit(2)
-                        .padding(.horizontal, 28)
+            Text(panelTitle)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(panelForeground)
+            if !viewModel.displayedDictationText.isEmpty {
+                ScrollView {
+                    Text(viewModel.displayedDictationText)
+                        .font(.system(size: 15))
+                        .foregroundStyle(panelForeground)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .frame(maxHeight: verticalSizeClass == .compact ? 50 : 100)
+                .padding(.horizontal, 20)
+                .accessibilityLabel(viewModel.dictationPhase == .ready ? "Review final transcript" : "Recent speech, provisional")
+            } else if let detail = panelDetail {
+                Text(detail)
+                    .font(.system(size: 12))
+                    .foregroundStyle(panelForeground.opacity(0.62))
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .padding(.horizontal, 28)
             }
-            .accessibilityElement(children: .combine)
         }
     }
 
@@ -365,8 +410,11 @@ struct KeyboardView: View {
         switch viewModel.dictationPhase {
         case .preparing: return "Starting…"
         case .processing: return "Transcribing…"
-        case .failed: return "Couldn't start"
-        case .recording, .ready, .idle: return "Listening"
+        case .failed: return "Dictation needs attention"
+        case .paused: return "Paused"
+        case .ready: return "Review, then tap Insert"
+        case .recording: return viewModel.displayedDictationText.isEmpty ? "Listening" : "Recent speech · provisional"
+        case .idle: return "Listening"
         }
     }
 
@@ -377,6 +425,8 @@ struct KeyboardView: View {
                 "Getting the microphone ready",
                 comment: "Keyboard dictation panel detail while preparing"
             )
+        case .paused:
+            return "Tap play to continue this recording."
         case .recording:
             return NSLocalizedString(
                 "On-device microphone",
@@ -410,6 +460,11 @@ struct KeyboardView: View {
                 .accessibilityLabel("Next keyboard")
             }
 
+            if viewModel.dictationPhase == .ready {
+                Button("Edit") { viewModel.editPendingDictation() }
+                    .font(.system(size: 13, weight: .medium))
+                    .accessibilityHint("Opens the transcript editor in Murmur before insertion")
+            }
             Spacer(minLength: 0)
 
             HStack(spacing: 5) {

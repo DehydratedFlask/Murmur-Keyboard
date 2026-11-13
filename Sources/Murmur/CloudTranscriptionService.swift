@@ -413,7 +413,7 @@ enum CloudTranscriptionService {
     /// Transcribes audio from a WAV file URL using the selected cloud provider.
     /// - Parameter audioURL: Path to a 16kHz mono WAV file.
     /// - Returns: Transcribed text.
-    static func transcribe(audioURL: URL) async throws -> String {
+    static func transcribe(audioURL: URL, languageCode: String? = nil) async throws -> String {
         let provider = selectedProvider
         guard let key = apiKey(for: provider), !key.isEmpty else {
             throw CloudTranscriptionError.noAPIKey
@@ -430,13 +430,15 @@ enum CloudTranscriptionService {
                 apiKey: key,
                 model: model,
                 audioData: audioData,
-                vocabulary: dictionaryTerms
+                vocabulary: dictionaryTerms,
+                languageCode: languageCode
             )
         case .deepgram:
             return try await transcribeDeepgram(
                 endpoint: deepgramEndpoint(
                     model: model,
-                    vocabulary: dictionaryTerms
+                    vocabulary: dictionaryTerms,
+                    languageCode: languageCode
                 ),
                 apiKey: key,
                 audioData: audioData
@@ -447,13 +449,15 @@ enum CloudTranscriptionService {
     /// Builds the Deepgram transcription URL with the selected model.
     private static func deepgramEndpoint(
         model: String,
-        vocabulary: [String] = []
+        vocabulary: [String] = [],
+        languageCode: String? = nil
     ) -> URL {
         var components = URLComponents(url: CloudProvider.deepgram.transcriptionEndpoint, resolvingAgainstBaseURL: false)!
         components.queryItems = [
             URLQueryItem(name: "model", value: model),
             URLQueryItem(name: "smart_format", value: "true"),
         ]
+        components.queryItems?.append(URLQueryItem(name: "language", value: languageCode ?? "multi"))
         let vocabularyParameter = model.lowercased().contains("nova-3")
             ? "keyterm"
             : "keywords"
@@ -526,7 +530,8 @@ enum CloudTranscriptionService {
         apiKey: String,
         model: String,
         audioData: Data,
-        vocabulary: [String] = []
+        vocabulary: [String] = [],
+        languageCode: String? = nil
     ) async throws -> String {
         let boundary = "Boundary-\(UUID().uuidString)"
 
@@ -548,7 +553,9 @@ enum CloudTranscriptionService {
         body.appendMultipartField(name: "response_format", value: "json", boundary: boundary)
 
         // Language hint
-        body.appendMultipartField(name: "language", value: "en", boundary: boundary)
+        if let languageCode {
+            body.appendMultipartField(name: "language", value: languageCode, boundary: boundary)
+        }
 
         if !vocabulary.isEmpty {
             let prompt = String(

@@ -1,0 +1,9 @@
+{
+  "lastQuery": "Using the supplied git context below, generate a git commit message.\nWrite the result into the structured response field message.\nmessage must contain plain commit-message text only, not JSON, field labels, or code fences.\nCustom commit instructions for message content and formatting override the fallback rules below.\nMake 0 tool calls.\nBounds:\n- Keep the complete message under 4000 characters.\n- Keep the subject under 72 characters.\nFallback rules:\n- Generate a concise single-line subject.\n- Use an imperative verb first.\n- Do not add a scope prefix unless the context already clearly uses one.\n- Do not include markdown, quotes, or trailing punctuation.\n\nDiff context:\nCustom commit instructions (follow these for commit message content and formatting):\nExplain the changes made in detailed technical terms so someone can look back on it and understand.\n\nChanges:\nDiff too large to include inline.\nSummary: 22 changed files, +1086/-405 lines.\n\nUntracked changes are not included.\n\nTesting note: If you mention tests, include unit tests or UI testing frameworks only. Skip lint/tsc since CI runs those.",
+  "perAgentQuery": {},
+  "graftReads": 0,
+  "sourceReads": 0,
+  "savedTokens": 0,
+  "injectedPointers": [],
+  "nudges": 0
+}

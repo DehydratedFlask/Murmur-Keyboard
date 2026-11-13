@@ -7,6 +7,7 @@ import WidgetKit
 struct MurmurDictationAttributes: ActivityAttributes, Sendable {
     struct ContentState: Codable, Hashable, Sendable {
         var startedAt: Date
+        var isPaused: Bool = false
     }
 
     var title: String
@@ -29,9 +30,9 @@ struct MurmurDictationLiveActivity: Widget {
                     .foregroundStyle(.purple)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(context.attributes.title)
+                    Text(context.state.isPaused ? "Murmur is paused" : context.attributes.title)
                         .font(.subheadline.weight(.semibold))
-                    Text("Tap Murmur's keyboard to insert")
+                    Text("Open Murmur to finish or pause")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -54,7 +55,7 @@ struct MurmurDictationLiveActivity: Widget {
                             Image(systemName: "waveform")
                                 .font(.system(size: 18, weight: .semibold))
                                 .foregroundStyle(.purple)
-                            Text(context.attributes.title)
+                            Text(context.state.isPaused ? "Murmur is paused" : context.attributes.title)
                                 .font(.subheadline.weight(.semibold))
                         }
                         Text(context.state.startedAt, style: .timer)

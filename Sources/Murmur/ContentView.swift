@@ -53,6 +53,15 @@ struct ContentView: View {
     @StateObject private var transcriptionService = TranscriptionService()
     @StateObject private var store = TranscriptionStore()
     @StateObject private var snippetStore = SnippetStore()
+    @StateObject private var draftStore = RecordingDraftStore()
+    @State private var activeDraft: RecordingDraft?
+    @State private var editorEntry: TranscriptionEntry?
+    @State private var draftToDiscard: RecordingDraft?
+    @State private var captureDestination: CaptureDestination = .note
+    @State private var livePreview = ""
+    @State private var previewTask: Task<Void, Never>?
+    @State private var pendingClipboardText: String?
+    @State private var captureStartPending = false
 
     // UI state
     @State private var isProcessing = false
@@ -100,6 +109,7 @@ struct ContentView: View {
                 } else {
                     VStack(spacing: 0) {
                         statusBar
+                        if recorder.isRecording { recordingControls }
                         transcriptionList
                     }
 
@@ -148,6 +158,7 @@ struct ContentView: View {
                             .font(.system(size: 16, weight: .semibold))
                     }
                     .buttonStyle(.plain)
+                    .disabled(recorder.isRecording || isProcessing || captureStartPending || transcriptionService.isTranscribing)
                 }
             }
             .toolbarBackground(.hidden, for: .navigationBar)
@@ -159,6 +170,23 @@ struct ContentView: View {
         }
         .sheet(item: $shareItem) { item in
             ShareSheet(text: item.text)
+        }
+        .sheet(item: $editorEntry) { entry in
+            TranscriptEditorView(entry: entry, store: store)
+        }
+        .confirmationDialog("Discard this recording?", isPresented: Binding(
+            get: { draftToDiscard != nil },
+            set: { if !$0 { draftToDiscard = nil } }
+        ), titleVisibility: .visible) {
+            if let draft = draftToDiscard {
+                Button("Discard recording", role: .destructive) {
+                    do { try draftStore.discard(draft) }
+                    catch { presentError(error.localizedDescription) }
+                    draftToDiscard = nil
+                }
+            }
+        } message: {
+            Text("This permanently deletes the saved audio from this iPhone.")
         }
         .alert("Microphone Access Required", isPresented: $showMicPermissionAlert) {
             Button("Open Settings") {
@@ -180,6 +208,9 @@ struct ContentView: View {
             await recorder.requestPermission()
             await transcriptionService.loadModel()
             checkKeyboardEnabled()
+            if appState.shouldStartDictation { handleStartDictationRequest() }
+            handleCaptureRequest()
+            openRequestedEditor()
         }
         .onDisappear {
             // The keyboard handoff intentionally backgrounds Murmur while it
@@ -187,7 +218,7 @@ struct ContentView: View {
             // background mode, recording continues while the user returns to
             // their original app. Actual audio interruptions are reported by
             // AudioRecorder and handled through `lastInterruptionError`.
-            transcriptionTask?.cancel()
+            // A route change must not cancel a durable transcription in flight.
             toastDismissTask?.cancel()
             errorDismissTask?.cancel()
             cloudFallbackDismissTask?.cancel()
@@ -201,6 +232,8 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
             // Immediate check on activation
             checkKeyboardEnabled()
+            finishClipboardDeliveryIfPossible()
+            openRequestedEditor()
             // Freshly used app: reopen the warm window so the keyboard can ask
             // for dictation without a redirect while this process is alive.
             SharedDefaults.extendWarmSession(
@@ -216,53 +249,47 @@ struct ContentView: View {
                 checkKeyboardEnabled()
             }
         }
-        .onChange(of: appState.shouldStartDictation) {
-            if appState.shouldStartDictation {
-                appState.shouldStartDictation = false
-
-                // A duplicate request — two taps, or a redirect arriving while
-                // a start is in flight — must not tear down work in progress.
-                // Doing that left the keyboard on "Starting…" with the
-                // microphone open and the checkmark disabled.
-                guard !recorder.isStarting, !recorder.isRecording else { return }
-
-                // Cancel any prior stale / background task before starting new work.
-                dictationTask?.cancel()
-
-                // The keyboard's session id is the source of truth for whether
-                // this dictation belongs to it — the one-shot request flag can
-                // already have been consumed by a duplicate.
-                let sharedState = SharedDefaults.dictationState()
-                isDictationFromKeyboard = SharedDefaults.consumeDictationRequested()
-                    || (sharedState.phase == .preparing && sharedState.sessionID != nil)
-                keyboardDictationSessionID = isDictationFromKeyboard
-                    ? (SharedDefaults.currentDictationSessionID() ?? sharedState.sessionID)
-                    : nil
-                keyboardCompletionMessage = nil
-
-                dictationTask = handleDictationRequest()
-            }
-        }
+        .onChange(of: appState.shouldStartDictation) { handleStartDictationRequest() }
         .onChange(of: appState.shouldStopDictation) {
             guard appState.shouldStopDictation else { return }
             appState.shouldStopDictation = false
             handleKeyboardStopRequest()
         }
+        .onChange(of: appState.captureRequest?.id) { handleCaptureRequest() }
+        .onChange(of: appState.editEntryID) { openRequestedEditor() }
+        .onChange(of: appState.pauseRequest) {
+            guard let paused = appState.pauseRequest else { return }
+            appState.pauseRequest = nil
+            setRecordingPaused(paused)
+        }
+        .onChange(of: appState.pauseRequestSequence) {
+            guard let paused = SharedDefaults.consumePauseRequest(sessionID: keyboardDictationSessionID) else { return }
+            setRecordingPaused(paused)
+        }
         .onChange(of: recorder.vadDidAutoStop) {
-            if recorder.vadDidAutoStop && recorder.isRecording {
+            if recorder.vadDidAutoStop && recorder.isRecording && !recorder.isPaused {
                 // VAD detected silence after speech — auto-stop and transcribe
                 stopAndTranscribe()
             }
         }
         .onChange(of: recorder.lastInterruptionError) {
             if let error = recorder.lastInterruptionError {
+                appState.isCapturing = false
+                previewTask?.cancel()
                 MurmurDictationLiveActivity.end()
+                if let draft = activeDraft {
+                    do { try draftStore.update(draft, message: error + " Retry the saved recording below.") }
+                    catch { presentError(error.localizedDescription) }
+                }
+                activeDraft = nil
+                recorder.cleanupRecording()
                 if isDictationFromKeyboard {
-                    signalKeyboardDictationAbandoned(reason: error)
+                    signalKeyboardDictationAbandoned(reason: error + " Your recording is saved in Murmur.")
                 }
                 presentError(error)
             }
         }
+        .onChange(of: store.entries.count) { openRequestedEditor() }
         .onReceive(store.$lastError) { error in
             if let error {
                 presentError(error.localizedDescription)
@@ -382,9 +409,13 @@ struct ContentView: View {
 
                 Spacer(minLength: 16)
 
-                swipeBackHint
-                    .padding(.horizontal, 24)
-                    .padding(.bottom, 28)
+                if recorder.isRecording {
+                    recordingControls
+                } else {
+                    swipeBackHint
+                        .padding(.horizontal, 24)
+                        .padding(.bottom, 28)
+                }
             }
             .frame(width: geo.size.width, height: geo.size.height)
         }
@@ -464,12 +495,20 @@ struct ContentView: View {
     }
 
     private func cancelKeyboardDictationFromScreen() {
+        appState.isCapturing = false
+        dictationTask?.cancel()
+        previewTask?.cancel()
         MurmurDictationLiveActivity.end()
         if recorder.isRecording {
             _ = recorder.stopRecording()
             recorder.cleanupRecording()
         }
         transcriptionTask?.cancel()
+        if let draft = activeDraft {
+            do { try draftStore.discard(draft) }
+            catch { presentError(error.localizedDescription) }
+            activeDraft = nil
+        }
         SharedDefaults.clearPendingText()
         SharedDefaults.setDictationRequested(false)
         SharedDefaults.clearDictationSession()
@@ -598,6 +637,82 @@ struct ContentView: View {
 
     // MARK: - Transcription List
 
+    @ViewBuilder
+    private var savedDrafts: some View {
+        if let message = draftStore.lastError {
+            Text(message).font(.caption).foregroundStyle(.orange).padding(.horizontal, 20)
+        }
+        ForEach(draftStore.drafts.filter { $0.id != activeDraft?.id }) { draft in
+            VStack(alignment: .leading, spacing: 10) {
+                Label("Saved recording", systemImage: "waveform.badge.exclamationmark")
+                    .font(.headline)
+                Text(draft.createdAt, style: .date).font(.caption).foregroundStyle(.secondary)
+                Text(draft.message).font(.subheadline).foregroundStyle(.secondary)
+                if let raw = draft.rawText {
+                    Text(raw).font(.caption).lineLimit(3).textSelection(.enabled)
+                }
+                HStack {
+                    Button("Retry transcription") { retryDraft(draft) }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(isProcessing || recorder.isRecording || recorder.isStarting || captureStartPending)
+                    Menu {
+                        Button("Keep for later") {
+                            do { try draftStore.update(draft, message: "Kept for later. Retry when you are ready.") }
+                            catch { presentError(error.localizedDescription) }
+                        }
+                        ShareLink(item: draftStore.audioURL(for: draft)) {
+                            Label("Export recording", systemImage: "square.and.arrow.up")
+                        }
+                        Button("Discard", role: .destructive) { draftToDiscard = draft }
+                            .disabled(isProcessing)
+                    } label: {
+                        Label("More", systemImage: "ellipsis.circle")
+                    }
+                }
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(murmurSurface(colorScheme), in: RoundedRectangle(cornerRadius: 20))
+            .padding(.horizontal, 20)
+        }
+    }
+
+    private var recordingControls: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Label(recorder.isPaused ? "Paused" : "Recording", systemImage: recorder.isPaused ? "pause.circle" : "mic.fill")
+                    .font(.headline)
+                Spacer()
+                Text(captureDestination == .clipboard ? "Copies when finished" : "Saved on this iPhone")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if MurmurPreferences.livePreviewEnabled {
+                Text("Recent speech · provisional").font(.caption).foregroundStyle(.secondary)
+                ScrollView {
+                    Text(livePreview.isEmpty ? "Your recent words will appear here as you speak." : livePreview)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .font(.subheadline)
+                }
+                .frame(maxHeight: 90)
+                .accessibilityLabel("Provisional transcript")
+            }
+            HStack {
+                Button(recorder.isPaused ? "Resume" : "Pause", systemImage: recorder.isPaused ? "play.fill" : "pause.fill") {
+                    setRecordingPaused(!recorder.isPaused)
+                }
+                .buttonStyle(.bordered)
+                Spacer()
+                Button("Finish", systemImage: "checkmark") { stopAndTranscribe() }
+                    .buttonStyle(.borderedProminent)
+            }
+            Button("Keep recording for later") { keepActiveDraft() }.font(.caption)
+        }
+        .padding(16)
+        .background(murmurSurface(colorScheme), in: RoundedRectangle(cornerRadius: 20))
+        .padding(.horizontal, 20)
+        .padding(.bottom, 8)
+    }
+
     private var transcriptionList: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 16, pinnedViews: []) {
@@ -606,6 +721,7 @@ struct ContentView: View {
                         .padding(.top, 2)
                 }
 
+                savedDrafts
                 statsSection
 
                 if !store.entries.isEmpty {
@@ -761,30 +877,18 @@ struct ContentView: View {
         .padding(.horizontal, 20)
         .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         .onTapGesture {
-            UIPasteboard.general.string = entry.text
-            showCopiedToast = true
-            toastDismissTask?.cancel()
-            toastDismissTask = Task {
-                try? await Task.sleep(for: .seconds(2))
-                if !Task.isCancelled {
-                    showCopiedToast = false
-                }
-            }
+            editorEntry = entry
         }
         .accessibilityAddTraits(.isButton)
-        .accessibilityLabel("Copy transcription")
-        .accessibilityHint("Copies this transcription to the clipboard")
+        .accessibilityLabel("Edit transcription")
+        .accessibilityHint("Opens the transcript, original words, and correction tools")
         .contextMenu {
+            Button { editorEntry = entry } label: {
+                Label("Edit", systemImage: "pencil")
+            }
             Button {
                 UIPasteboard.general.string = entry.text
                 showCopiedToast = true
-                toastDismissTask?.cancel()
-                toastDismissTask = Task {
-                    try? await Task.sleep(for: .seconds(2))
-                    if !Task.isCancelled {
-                        showCopiedToast = false
-                    }
-                }
             } label: {
                 Label("Copy", systemImage: "doc.on.doc")
             }
@@ -1108,27 +1212,22 @@ struct ContentView: View {
     // MARK: - Recording Actions
 
     private func handleRecordingTap() {
-        guard !recorder.isStarting else { return }
+        guard !recorder.isStarting, !isProcessing, !captureStartPending else { return }
+        recordHaptic.impactOccurred()
         if recorder.isRecording {
-            recordHaptic.impactOccurred()
             stopAndTranscribe()
         } else {
-            recordHaptic.impactOccurred()
-            // If model was unloaded (e.g. by a memory warning), reload it first
-            // Cloud-ready users can start recording immediately
-            if transcriptionService.modelState == .unloaded && !CloudTranscriptionService.isReady {
-                Task {
+            captureDestination = .note
+            isDictationFromKeyboard = false
+            keyboardDictationSessionID = nil
+            dictationTask?.cancel()
+            dictationTask = Task {
+                if transcriptionService.modelState == .unloaded && !CloudTranscriptionService.isReady {
                     await transcriptionService.loadModel()
-                    if transcriptionService.modelState == .loaded {
-                        await startRecording()
-                    }
+                    guard transcriptionService.modelState == .loaded else { return }
                 }
-            } else {
-                // Also kick off model load in the background for fallback
-                if transcriptionService.modelState == .unloaded {
-                    Task { await transcriptionService.loadModel() }
-                }
-                Task { await startRecording() }
+                guard !Task.isCancelled else { return }
+                await startRecording()
             }
         }
     }
@@ -1139,7 +1238,7 @@ struct ContentView: View {
 
         return Task {
             for _ in 0..<(isWarmLaunch ? 8 : 60) {
-                if transcriptionService.modelState == .loaded && recorder.hasPermission { break }
+                if (transcriptionService.modelState == .loaded || CloudTranscriptionService.isReady) && recorder.hasPermission { break }
                 if transcriptionService.modelState.isError { break }
                 do {
                     try await Task.sleep(for: .milliseconds(500))
@@ -1165,6 +1264,9 @@ struct ContentView: View {
     }
 
     private func startRecording() async {
+        guard !captureStartPending, !recorder.isRecording, !isProcessing else { return }
+        captureStartPending = true
+        defer { captureStartPending = false }
         clearErrorMessage()
 
         // Activating the audio session is refused while the app is still coming
@@ -1180,8 +1282,27 @@ struct ContentView: View {
             waited += 1
         }
 
+        guard !Task.isCancelled else { return }
+        let hint = isDictationFromKeyboard ? SharedDefaults.consumeDictationContext() : (surface: nil as String?, before: nil as String?, after: nil as String?)
+        let configured = MurmurPreferences.formattingSurface
+        let surface = configured == .automatic ? (hint.surface.flatMap(DictationSurface.init(rawValue:)) ?? .general) : configured
+        let draft: RecordingDraft
         do {
-            try await recorder.startRecording()
+            draft = try draftStore.create(
+                destination: captureDestination, surface: surface,
+                languageCode: MurmurPreferences.primaryLanguageCode, before: hint.before, after: hint.after
+            )
+        } catch {
+            handleRecordingStartFailure(error)
+            return
+        }
+        activeDraft = draft
+        let silence = MurmurPreferences.silenceMode.seconds
+        recorder.vadEnabled = silence != nil
+        recorder.vadSilenceDuration = silence ?? 10
+
+        do {
+            try await recorder.startRecording(to: draftStore.audioURL(for: draft))
         } catch is CancellationError {
             // A newer dictation request replaced this one — most often right
             // after stopping and starting again. Nothing failed, so nothing to
@@ -1200,7 +1321,7 @@ struct ContentView: View {
             // second dictation reports "couldn't start the microphone".
             await recorder.recoverAudioSession()
             do {
-                try await recorder.startRecording()
+                try await recorder.startRecording(to: draftStore.audioURL(for: draft))
             } catch is CancellationError {
                 return
             } catch {
@@ -1208,18 +1329,25 @@ struct ContentView: View {
                 return
             }
         }
+        guard !Task.isCancelled, activeDraft?.id == draft.id else {
+            recorder.stopRecording()
+            recorder.cleanupRecording()
+            return
+        }
         didStartRecording()
     }
 
     /// Everything that follows a successful start, shared by the first attempt
     /// and the silent retry.
     private func didStartRecording() {
+        appState.isCapturing = true
         MurmurDictationLiveActivity.start()
+        startLivePreview()
 
         // Trust the shared session as well as the local flag: a duplicate
         // request can consume the one-shot flag before this runs, and then the
         // keyboard would sit on "Starting…" while the microphone was open.
-        if !isDictationFromKeyboard {
+        if captureDestination == .keyboard && !isDictationFromKeyboard {
             let state = SharedDefaults.dictationState()
             if state.phase == .preparing, let sessionID = SharedDefaults.currentDictationSessionID() {
                 isDictationFromKeyboard = true
@@ -1246,6 +1374,11 @@ struct ContentView: View {
     }
 
     private func handleRecordingStartFailure(_ error: Error) {
+        if let draft = activeDraft {
+            do { try draftStore.discard(draft) }
+            catch { presentError(error.localizedDescription) }
+            activeDraft = nil
+        }
         if case RecordingError.noPermission = error {
             showMicPermissionAlert = recorder.permissionDenied
         }
@@ -1269,197 +1402,252 @@ struct ContentView: View {
         }
     }
 
-    private func stopAndTranscribe() {        MurmurDictationLiveActivity.end()
-        if isDictationFromKeyboard {
-            SharedDefaults.setDictationPhase(
-                .processing,
-                sessionID: keyboardDictationSessionID
-            )
-        }
+    private func stopAndTranscribe() {
+        appState.isCapturing = false
+        guard !isProcessing, let draft = activeDraft else { return }
+        MurmurDictationLiveActivity.end()
+        recorder.stopRecording()
+        recorder.cleanupRecording()
+        activeDraft = nil
+        transcribeDraft(draft, sessionID: keyboardDictationSessionID, destination: captureDestination)
+    }
 
-        guard let audioURL = recorder.stopRecording() else {
-            if isDictationFromKeyboard {
-                signalKeyboardDictationAbandoned(reason: NSLocalizedString("No audio was recorded.", comment: "Keyboard dictation missing audio"))
-            }
-            presentError(NSLocalizedString("No audio was recorded.", comment: "Error when recording produces no audio"))
-            return
-        }
+    private func retryDraft(_ draft: RecordingDraft) {
+        guard !recorder.isRecording, !recorder.isStarting, !isProcessing, !captureStartPending else { return }
+        // A retry is a fresh app action; never send it to a field from an old session.
+        isDictationFromKeyboard = false
+        keyboardDictationSessionID = nil
+        transcribeDraft(draft, sessionID: nil, destination: draft.destination == .clipboard ? .clipboard : .note)
+    }
 
-        // Verify the audio file still exists and has non-zero size before passing to transcription.
-        let fileManager = FileManager.default
-        if !fileManager.fileExists(atPath: audioURL.path) {
-            if isDictationFromKeyboard {
-                signalKeyboardDictationAbandoned(reason: NSLocalizedString("Recording file not found. Please try again.", comment: "Keyboard dictation missing audio file"))
-            }
-            presentError(NSLocalizedString("Recording file not found. Please try again.", comment: "Error when audio file is missing"))
-            return
-        }
-        do {
-            let attrs = try fileManager.attributesOfItem(atPath: audioURL.path)
-            let fileSize = attrs[.size] as? UInt64 ?? 0
-            if fileSize == 0 {
-                if isDictationFromKeyboard {
-                    signalKeyboardDictationAbandoned(reason: NSLocalizedString("Recording file is empty. Please try again.", comment: "Keyboard dictation empty audio file"))
-                }
-                presentError(NSLocalizedString("Recording file is empty. Please try again.", comment: "Error when audio file is empty"))
-                return
-            }
-        } catch {
-            if isDictationFromKeyboard {
-                signalKeyboardDictationAbandoned(reason: NSLocalizedString("Could not read the recording file. Please try again.", comment: "Keyboard dictation audio file attribute failure"))
-            }
-            presentError(NSLocalizedString("Could not read the recording file. Please try again.", comment: "Error when reading audio file attributes"))
-            return
-        }
-
+    private func transcribeDraft(_ draft: RecordingDraft, sessionID: String?, destination: CaptureDestination) {
+        guard !isProcessing else { return }
         isProcessing = true
         clearErrorMessage()
-
-        // Cancel any existing transcription task before starting a new one
-        transcriptionTask?.cancel()
+        if let sessionID { SharedDefaults.setDictationPhase(.processing, sessionID: sessionID) }
+        let preview = previewTask
+        previewTask?.cancel()
+        previewTask = nil
         transcriptionTaskID &+= 1
-        let myTaskID = transcriptionTaskID
-        let useCloud = CloudTranscriptionService.isReady
-        let task = Task {
+        let taskID = transcriptionTaskID
+        let audioURL = draftStore.audioURL(for: draft)
+        transcriptionTask = Task { @MainActor in
+            // Cancellation may not interrupt a model call. Join it before final decoding.
+            await preview?.value
             defer {
-                // Only clear if this is still the current task (a newer
-                // stopAndTranscribe hasn't replaced us).
-                if transcriptionTaskID == myTaskID {
-                    transcriptionTask = nil
+                if transcriptionTaskID == taskID {
                     isProcessing = false
+                    transcriptionTask = nil
                 }
-                recorder.cleanupRecording()
-                SharedDefaults.extendWarmSession(
-                    minutes: MurmurPreferences.sessionDuration.minutes
-                )
+                SharedDefaults.extendWarmSession(minutes: MurmurPreferences.sessionDuration.minutes)
             }
+            var latestDraft = draft
             do {
-                // Whisper does not return nothing when it hears silence or a
-                // steady fan — it invents whole sentences, and those invented
-                // words are the "extra words" in a transcript. Hand it only the
-                // stretches that contain a voice, the way Amical's VAD filter
-                // does before its local model.
-                let scan = await SpeechSegmenter.scan(audioURL)
-                if let scan, !scan.hasSpeech {
-                    if isDictationFromKeyboard {
-                        signalKeyboardDictationAbandoned(
-                            reason: NSLocalizedString(
-                                "No speech was detected. Please try again.",
-                                comment: "Keyboard dictation found no speech"
-                            )
-                        )
-                    }
-                    presentError(
-                        NSLocalizedString(
-                            "No speech was detected. Please try again.",
-                            comment: "Recording contained no speech"
-                        )
-                    )
-                    return
-                }
-                // A scan that could not read the file must never eat the
-                // recording: transcribe the original instead.
-                let transcriptionURL = scan?.audioURL ?? audioURL
-                defer {
-                    if transcriptionURL != audioURL {
-                        try? FileManager.default.removeItem(at: transcriptionURL)
-                    }
-                }
-
-                var rawText: String
+                try Task.checkCancellation()
+                // Retry recognition from saved audio. Cached words are a fallback
+                // only if the recording itself is no longer available.
+                var rawText: String? = FileManager.default.fileExists(atPath: audioURL.path) ? nil : draft.rawText
                 var didFallback = false
-
-                if useCloud {
-                    do {
-                        rawText = try await CloudTranscriptionService.transcribe(audioURL: transcriptionURL)
-                    } catch {
-                        // Cloud failed — fall back to local WhisperKit
-                        print("[Murmur] Cloud transcription failed: \(error.localizedDescription). Falling back to on-device.")
-                        rawText = try await transcriptionService.transcribe(audioURL: transcriptionURL)
-                        didFallback = true
+                if rawText == nil {
+                    let attributes = try FileManager.default.attributesOfItem(atPath: audioURL.path)
+                    guard ((attributes[.size] as? NSNumber)?.intValue ?? 0) > 44 else {
+                        throw DictationCaptureError.noAudio
                     }
-                } else {
-                    rawText = try await transcriptionService.transcribe(audioURL: transcriptionURL)
+                    let scan = await SpeechSegmenter.scan(audioURL)
+                    if let scan, !scan.hasSpeech { throw DictationCaptureError.noSpeech }
+                    let inputURL = scan?.audioURL ?? audioURL
+                    defer {
+                        if inputURL != audioURL { try? FileManager.default.removeItem(at: inputURL) }
+                    }
+                    if CloudTranscriptionService.isReady {
+                        do {
+                            rawText = try await CloudTranscriptionService.transcribe(audioURL: inputURL, languageCode: draft.languageCode)
+                        } catch {
+                            try Task.checkCancellation()
+                            rawText = try await transcriptionService.transcribe(audioURL: inputURL, languageCode: draft.languageCode)
+                            didFallback = true
+                        }
+                    } else {
+                        rawText = try await transcriptionService.transcribe(audioURL: inputURL, languageCode: draft.languageCode)
+                    }
+                    try Task.checkCancellation()
+                    latestDraft = try draftStore.update(draft, message: "Transcribed. Finishing text…", rawText: rawText)
                 }
-
-                // The keyboard recorded which field this dictation started from
-                // and the text around the cursor; the formatter uses it to
-                // shape the result for that surface and to join an existing
-                // sentence — Amical's context awareness, with the context a
-                // keyboard extension can actually see.
-                let hint = SharedDefaults.consumeDictationContext()
-                let configured = MurmurPreferences.formattingSurface
-                let detected = hint.surface.flatMap(DictationSurface.init(rawValue:))
-                let surface = configured == .automatic
-                    ? (detected ?? .general)
-                    : configured
-
+                let original = rawText ?? ""
+                let surface = DictationSurface(rawValue: draft.surface) ?? .general
                 let polished = await TranscriptCleanupService.process(
-                    rawText,
-                    useFoundationModel: MurmurPreferences.aiCleanupEnabled,
-                    surface: surface,
-                    contextBefore: hint.before,
-                    contextAfter: hint.after
+                    original, useFoundationModel: MurmurPreferences.aiCleanupEnabled,
+                    surface: surface, contextBefore: draft.contextBefore, contextAfter: draft.contextAfter
                 )
-                let cleanedText = SnippetStore.apply(snippetStore.snippets, to: polished)
+                let text = surface == .verbatim ? polished : SnippetStore.apply(snippetStore.snippets, to: polished)
+                guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw DictationCaptureError.noSpeech }
+                try Task.checkCancellation()
+                let entry = TranscriptionEntry(id: draft.id, text: text, rawText: original, polishedText: text)
+                try await store.saveDurably(entry)
+                // History is safely written before the recovery audio is removed.
+                do { try draftStore.discard(latestDraft) }
+                catch { presentError("Text saved, but the recording could not be deleted: " + error.localizedDescription) }
 
+                if let sessionID, SharedDefaults.currentDictationSessionID() == sessionID {
+                    SharedDefaults.setPendingText(text, sessionID: sessionID, entryID: entry.id.uuidString)
+                    successHaptic.notificationOccurred(.success)
+                } else if destination == .clipboard {
+                    pendingClipboardText = text
+                    finishClipboardDeliveryIfPossible()
+                }
                 if didFallback {
                     showCloudFallbackToast = true
                     cloudFallbackDismissTask?.cancel()
                     cloudFallbackDismissTask = Task {
                         try? await Task.sleep(for: .seconds(3))
-                        if !Task.isCancelled {
-                            showCloudFallbackToast = false
-                        }
+                        if !Task.isCancelled { showCloudFallbackToast = false }
                     }
-                }
-
-                if !cleanedText.isEmpty {
-                    let entry = TranscriptionEntry(text: cleanedText)
-                    withAnimation {
-                        store.save(entry)
-                    }
-
-                    if isDictationFromKeyboard {
-                        SharedDefaults.setPendingText(cleanedText, sessionID: keyboardDictationSessionID)
-                        keyboardCompletionMessage = "Transcription ready. Murmur will insert it when the keyboard is visible."
-                        successHaptic.notificationOccurred(.success)
-                        try? await Task.sleep(for: .milliseconds(800))
-                    }
-                } else if isDictationFromKeyboard {
-                    signalKeyboardDictationAbandoned(reason: NSLocalizedString("No speech was detected.", comment: "Keyboard dictation produced empty text"))
-                }
-                isDictationFromKeyboard = false
-                keyboardDictationSessionID = nil
-            } catch is CancellationError {
-                if isDictationFromKeyboard {
-                    signalKeyboardDictationAbandoned(reason: "Dictation was cancelled.")
                 }
                 isDictationFromKeyboard = false
                 keyboardDictationSessionID = nil
             } catch {
-                if isDictationFromKeyboard {
-                    signalKeyboardDictationAbandoned(reason: error.localizedDescription)
+                let message = error is CancellationError ? "Transcription paused. Retry the saved recording." : saneErrorText(error.localizedDescription)
+                do { try draftStore.update(latestDraft, message: message) }
+                catch { presentError(error.localizedDescription) }
+                if let sessionID, SharedDefaults.currentDictationSessionID() == sessionID {
+                    signalKeyboardDictationAbandoned(reason: message + " Your recording is saved in Murmur.")
                 }
-                isDictationFromKeyboard = false
-                keyboardDictationSessionID = nil
-                presentError(error.localizedDescription)
+                presentError(message + " Your recording is saved below.")
             }
         }
-        transcriptionTask = task
     }
 
     private func handleKeyboardStopRequest() {
-        guard isDictationFromKeyboard,
-              SharedDefaults.consumeDictationStopRequest(
-                matching: keyboardDictationSessionID
-              )
-        else {
+        if let sessionID = keyboardDictationSessionID {
+            guard SharedDefaults.consumeDictationStopRequest(matching: sessionID) else { return }
+            if SharedDefaults.currentDictationSessionID() != sessionID {
+                cancelKeyboardDictationFromScreen()
+                return
+            }
+        }
+        if recorder.isRecording { stopAndTranscribe() }
+    }
+
+    private func startLivePreview() {
+        let previous = previewTask
+        previous?.cancel()
+        livePreview = ""
+        guard MurmurPreferences.livePreviewEnabled, let draft = activeDraft else { return }
+        previewTask = Task { @MainActor in
+            await previous?.value
+            while !Task.isCancelled, recorder.isRecording, activeDraft?.id == draft.id {
+                do { try await Task.sleep(for: .seconds(4)) }
+                catch { return }
+                guard !Task.isCancelled, recorder.isRecording, !recorder.isPaused,
+                      !isProcessing, transcriptionService.modelState == .loaded,
+                      !transcriptionService.isTranscribing else { continue }
+                do {
+                    guard let url = try await recorder.previewSnapshot() else { continue }
+                    defer { try? FileManager.default.removeItem(at: url) }
+                    try Task.checkCancellation()
+                    let scan = await SpeechSegmenter.scan(url)
+                    let input = scan?.audioURL ?? url
+                    defer { if input != url { try? FileManager.default.removeItem(at: input) } }
+                    if let scan, !scan.hasSpeech { continue }
+                    let text = try await transcriptionService.transcribe(audioURL: input, languageCode: draft.languageCode)
+                    guard !Task.isCancelled, recorder.isRecording, activeDraft?.id == draft.id else { return }
+                    livePreview = TextProcessor.removeSpeechArtifacts(from: text).trimmingCharacters(in: .whitespacesAndNewlines)
+                    if let sessionID = keyboardDictationSessionID {
+                        SharedDefaults.setLivePreview(livePreview, sessionID: sessionID)
+                    }
+                } catch {
+                    // Provisional decoding is best effort; the durable final recording remains intact.
+                    if Task.isCancelled { return }
+                }
+            }
+        }
+    }
+
+    private func setRecordingPaused(_ paused: Bool) {
+        guard recorder.isRecording else { return }
+        do {
+            if paused { recorder.pauseRecording() }
+            else { try recorder.resumeRecording() }
+            MurmurDictationLiveActivity.setPaused(recorder.isPaused)
+            if let sessionID = keyboardDictationSessionID {
+                SharedDefaults.setDictationPhase(recorder.isPaused ? .paused : .recording, sessionID: sessionID)
+            }
+        } catch { presentError(error.localizedDescription) }
+    }
+
+    private func keepActiveDraft() {
+        appState.isCapturing = false
+        guard let draft = activeDraft else { return }
+        previewTask?.cancel()
+        recorder.stopRecording()
+        recorder.cleanupRecording()
+        activeDraft = nil
+        MurmurDictationLiveActivity.end()
+        do { try draftStore.update(draft, message: "Kept for later. Retry when you are ready.") }
+        catch { presentError(error.localizedDescription) }
+        if isDictationFromKeyboard { signalKeyboardDictationAbandoned(reason: "Recording kept in Murmur for later.") }
+    }
+
+    private func handleStartDictationRequest() {
+        if appState.shouldStartDictation {
+            appState.shouldStartDictation = false
+
+            // A duplicate request — two taps, or a redirect arriving while
+            // a start is in flight — must not tear down work in progress.
+            // Doing that left the keyboard on "Starting…" with the
+            // microphone open and the checkmark disabled.
+            guard !recorder.isStarting, !recorder.isRecording, !isProcessing, !captureStartPending else { return }
+
+            // Cancel any prior stale / background task before starting new work.
+            dictationTask?.cancel()
+
+            // The keyboard's session id is the source of truth for whether
+            // this dictation belongs to it — the one-shot request flag can
+            // already have been consumed by a duplicate.
+            let sharedState = SharedDefaults.dictationState()
+            isDictationFromKeyboard = SharedDefaults.consumeDictationRequested()
+                || (sharedState.phase == .preparing && sharedState.sessionID != nil)
+            keyboardDictationSessionID = isDictationFromKeyboard
+                ? (SharedDefaults.currentDictationSessionID() ?? sharedState.sessionID)
+                : nil
+            keyboardCompletionMessage = nil
+            captureDestination = isDictationFromKeyboard ? .keyboard : .note
+
+            dictationTask = handleDictationRequest()
+        }
+    }
+
+    private func handleCaptureRequest() {
+        guard let request = appState.captureRequest else { return }
+        appState.captureRequest = nil
+        guard !recorder.isRecording, !recorder.isStarting, !isProcessing, !captureStartPending else {
+            presentError("Finish the current dictation before starting another.")
             return
         }
+        captureDestination = request.destination
+        isDictationFromKeyboard = false
+        keyboardDictationSessionID = nil
+        dictationTask?.cancel()
+        dictationTask = handleDictationRequest()
+    }
 
-        if recorder.isRecording {
-            stopAndTranscribe()
+    private func openRequestedEditor() {
+        guard let id = appState.editEntryID else { return }
+        if let entry = store.entries.first(where: { $0.id == id }) {
+            editorEntry = entry
+            appState.editEntryID = nil
+        }
+    }
+
+    private func finishClipboardDeliveryIfPossible() {
+        guard UIApplication.shared.applicationState == .active, let text = pendingClipboardText else { return }
+        UIPasteboard.general.string = text
+        pendingClipboardText = nil
+        showCopiedToast = true
+        toastDismissTask?.cancel()
+        toastDismissTask = Task {
+            try? await Task.sleep(for: .seconds(2))
+            if !Task.isCancelled { showCopiedToast = false }
         }
     }
 
@@ -1606,11 +1794,14 @@ struct SettingsView: View {
     @AppStorage("appearanceMode") private var appearanceMode: String = AppearanceMode.auto.rawValue
     @AppStorage("cloudDictationEnabled") private var cloudDictationEnabled = false
     @AppStorage("cloudProvider") private var cloudProviderRaw: String = CloudProvider.groq.rawValue
-    @AppStorage("dictationAutoDetectLanguage") private var autoDetectLanguage = true
+    @AppStorage("dictationAutoDetectLanguage", store: SharedDefaults.suite) private var autoDetectLanguage = true
     @AppStorage("dictationSessionDuration") private var sessionDurationRaw = DictationSessionDuration.fiveMinutes.rawValue
-    @AppStorage("historyRetentionDays") private var historyRetentionRaw = 14
+    @AppStorage("historyRetentionDays") private var historyRetentionRaw = 0
     @AppStorage("aiCleanupEnabled") private var aiCleanupEnabled = true
-    @AppStorage("formattingSurface") private var formattingSurfaceRaw = DictationSurface.automatic.rawValue
+    @AppStorage("formattingSurface", store: SharedDefaults.suite) private var formattingSurfaceRaw = DictationSurface.automatic.rawValue
+    @AppStorage("recordingSilenceMode") private var silenceModeRaw = RecordingSilenceMode.thinkingTime.rawValue
+    @AppStorage("livePreviewEnabled") private var livePreviewEnabled = true
+    @AppStorage("reviewBeforeInsertion", store: SharedDefaults.suite) private var reviewBeforeInsertion = false
     @State private var keyHapticsEnabled = SharedDefaults.isKeyHapticsEnabled()
     @StateObject private var snippetStore = SnippetStore()
     @State private var selectedLanguageCodes: [String] = MurmurPreferences.selectedLanguageCodes
@@ -1670,7 +1861,7 @@ struct SettingsView: View {
     }
 
     private var historyRetention: HistoryRetention {
-        HistoryRetention(rawValue: historyRetentionRaw) ?? .fourteenDays
+        HistoryRetention(rawValue: historyRetentionRaw) ?? .forever
     }
 
     private var appearanceModeDisplay: String {
@@ -1763,6 +1954,27 @@ struct SettingsView: View {
                 }
             } header: {
                 Text("Dictation")
+            }
+
+            Section {
+                Picker("Stop after silence", selection: $silenceModeRaw) {
+                    ForEach(RecordingSilenceMode.allCases) { mode in
+                        Text(mode.title).tag(mode.rawValue)
+                    }
+                }
+                Toggle("Live transcript preview", isOn: $livePreviewEnabled)
+                Toggle("Review before keyboard insertion", isOn: $reviewBeforeInsertion)
+            } header: {
+                Text("Recording")
+            } footer: {
+                Text("Quick message stops after 2 seconds of silence; Thinking time waits 10 seconds. Stop manually waits for you. Preview uses the local model and shows recent speech; final text may change.")
+            }
+
+            Section {
+                Text("Add Dictate to Clipboard or Capture a Voice Note in Shortcuts, then assign it to your iPhone’s Action Button. Run the shortcut again while recording to finish. Text is saved locally; clipboard capture copies after transcription when Murmur is active.")
+                    .font(.subheadline).foregroundStyle(.secondary)
+            } header: {
+                Text("Action Button & Shortcuts")
             }
 
             Section {
@@ -2064,6 +2276,9 @@ struct SettingsView: View {
         .onAppear {
             loadStateForCurrentProvider()
             refreshStatus()
+            selectedLanguageCodes = MurmurPreferences.selectedLanguageCodes
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
             selectedLanguageCodes = MurmurPreferences.selectedLanguageCodes
         }
         .onDisappear {
@@ -2605,7 +2820,7 @@ private struct SnippetsView: View {
 // MARK: - Language
 
 private struct LanguageView: View {
-    @AppStorage("dictationAutoDetectLanguage") private var autoDetect = true
+    @AppStorage("dictationAutoDetectLanguage", store: SharedDefaults.suite) private var autoDetect = true
     @State private var selected: [String] = MurmurPreferences.selectedLanguageCodes
     @State private var search = ""
 
@@ -2656,6 +2871,10 @@ private struct LanguageView: View {
         .navigationTitle("Language")
         .navigationBarTitleDisplayMode(.inline)
         .tint(murmurAccent)
+        .onAppear { selected = MurmurPreferences.selectedLanguageCodes }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
+            selected = MurmurPreferences.selectedLanguageCodes
+        }
         .onChange(of: selected) {
             MurmurPreferences.selectedLanguageCodes = selected
         }
@@ -2735,11 +2954,11 @@ private struct SessionDurationView: View {
 
 private struct HistoryRetentionView: View {
     @ObservedObject var store: TranscriptionStore
-    @AppStorage("historyRetentionDays") private var retentionRaw = 14
+    @AppStorage("historyRetentionDays") private var retentionRaw = 0
     @State private var showDeleteConfirmation = false
 
     private var selected: HistoryRetention {
-        HistoryRetention(rawValue: retentionRaw) ?? .fourteenDays
+        HistoryRetention(rawValue: retentionRaw) ?? .forever
     }
 
     var body: some View {
@@ -2801,7 +3020,7 @@ private struct HistoryRetentionView: View {
 /// field the keyboard was in, which is what Amical does by reading the active
 /// app; the explicit styles force one shape everywhere.
 private struct FormattingSurfaceView: View {
-    @AppStorage("formattingSurface") private var surfaceRaw = DictationSurface.automatic.rawValue
+    @AppStorage("formattingSurface", store: SharedDefaults.suite) private var surfaceRaw = DictationSurface.automatic.rawValue
 
     private var selected: DictationSurface {
         DictationSurface(rawValue: surfaceRaw) ?? .automatic

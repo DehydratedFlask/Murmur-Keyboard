@@ -81,6 +81,17 @@ handoff:
 capitalization (`Siobhan` ← "shiv on"). Stored locally; entries bias
 WhisperKit, optional cloud providers, and the local cleanup model.
 
+## Capture, review, and recovery
+
+- Interrupted/failed recordings stay in **Saved recording** cards. Retry the same audio, keep it for later, export it, or discard it. Successful transcription removes recovery audio after history is saved.
+- Tap history to edit text, restore original recognition output or polished text, and save a confirmed spelling correction to Vocabulary. Older history remains readable; originals are available only for new dictations.
+- Pause/resume a recording and choose **Quick message**, **Thinking time**, or **Stop manually** in Settings. Live preview shows provisional recent speech using the existing local model.
+- Use the keyboard's sliders menu to change formatting style and preferred dictation language. Enable **Review before keyboard insertion** to review or edit finished text before inserting it.
+- Add **Dictate to Clipboard**, **Capture a Voice Note**, or **Finish Dictation** in Shortcuts. Assign a capture shortcut to the Action Button; running it again during recording finishes the session. These shortcuts open Murmur and use its capture UI.
+- Verbatim preserves recognition output without filler cleanup, dictionary alias replacement, or snippet expansion.
+
+The source implementation has a separate [feature plan](DICTATION_FEATURE_PLAN.md) and [build/device test checklist](DICTATION_TEST_CHECKLIST.md). Build and runtime verification for these additions is pending.
+
 ## Privacy
 
 On-device dictation and cleanup stay local. No analytics, tracking, account

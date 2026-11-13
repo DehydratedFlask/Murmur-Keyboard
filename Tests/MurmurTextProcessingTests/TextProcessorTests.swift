@@ -32,6 +32,24 @@ final class TextProcessorTests: XCTestCase {
         super.tearDown()
     }
 
+    // Authored for the user's later test run; not executed during implementation.
+    func testVerbatimPreservesFillersRepetitionAndSelfCorrections() async {
+        let raw = "um I I meant Tuesday no sorry Thursday"
+        let output = await TranscriptCleanupService.process(
+            raw, dictionary: [], useFoundationModel: false, surface: .verbatim
+        )
+        XCTAssertEqual(output, raw)
+    }
+
+    func testVerbatimSkipsDictionaryAliasesButRemovesAudioArtifacts() async {
+        let output = await TranscriptCleanupService.process(
+            "[BLANK_AUDIO] shiv on um shiv on",
+            dictionary: [PersonalDictionaryEntry(phrase: "Siobhan", spokenAliases: ["shiv on"])],
+            useFoundationModel: false, surface: .verbatim
+        )
+        XCTAssertEqual(output, "shiv on um shiv on")
+    }
+
     func testRestoresSafeTerminalPunctuation() {
         let cases = [
             ("hello this is a test", "Hello this is a test."),

@@ -1,17 +1,23 @@
 import Foundation
+import Combine
 
 // MARK: - Model
 
 struct TranscriptionEntry: Codable, Identifiable, Sendable {
     let id: UUID
     let text: String
+    /// Recognition output before cleanup. Older entries have no original.
+    let rawText: String?
+    let polishedText: String?
     let timestamp: Date
     let wordCount: Int
 
-    init(id: UUID = UUID(), text: String, timestamp: Date = Date()) {
+    init(id: UUID = UUID(), text: String, timestamp: Date = Date(), rawText: String? = nil, polishedText: String? = nil) {
         self.id = id
         self.text = text
         self.timestamp = timestamp
+        self.rawText = rawText
+        self.polishedText = polishedText
         self.wordCount = text.split { $0.isWhitespace }.count
     }
 }
@@ -29,15 +35,14 @@ final class TranscriptionStore: ObservableObject {
     private(set) var isLoaded = false
 
     private let fileURL: URL
-    private let preCleanupBackupURL: URL
     private var saveTask: Task<Void, Never>?
     private var saveGeneration: UInt = 0
     private var loadTask: Task<Void, Never>?
+    private var loadFailure: Error?
 
     init() {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         fileURL = docs.appendingPathComponent("transcriptions.json")
-        preCleanupBackupURL = docs.appendingPathComponent("transcriptions-pre-cleanup.json")
         load()
     }
 
@@ -49,10 +54,41 @@ final class TranscriptionStore: ObservableObject {
     // MARK: - Public API
 
     func save(_ entry: TranscriptionEntry) {
+        if let previous = entries.first(where: { $0.id == entry.id }) {
+            entries.removeAll { $0.id == entry.id }
+            totalWordCount -= previous.wordCount
+        }
         entries.insert(entry, at: 0)
+        entries.sort { $0.timestamp > $1.timestamp }
         totalWordCount += entry.wordCount
         if isLoaded {
             persist()
+        }
+    }
+
+    /// Recovery audio is removed only after this completes successfully.
+    func saveDurably(_ entry: TranscriptionEntry) async throws {
+        await loadTask?.value
+        if let loadFailure { throw loadFailure }
+        save(entry)
+        // Another history action can supersede the write while we await it.
+        // Join the latest generation before declaring recovery audio disposable.
+        var generation: UInt
+        repeat {
+            generation = saveGeneration
+            await saveTask?.value
+        } while generation != saveGeneration
+        if let lastError { throw lastError }
+    }
+
+    func updateText(for entry: TranscriptionEntry, to text: String) async throws {
+        let updated = TranscriptionEntry(
+            id: entry.id, text: text, timestamp: entry.timestamp,
+            rawText: entry.rawText, polishedText: entry.polishedText
+        )
+        try await saveDurably(updated)
+        if let pending = SharedDefaults.peekPendingTextPayload(), pending.entryID == entry.id.uuidString {
+            SharedDefaults.setPendingText(text, sessionID: pending.sessionID, entryID: pending.entryID)
         }
     }
 
@@ -89,6 +125,7 @@ final class TranscriptionStore: ObservableObject {
     /// Drops entries older than the retention window the user picked.
     func applyRetentionPolicy() {
         let days = MurmurPreferences.historyRetention.days
+        guard days > 0 else { return }
         guard let cutoff = Calendar.current.date(byAdding: .day, value: -days, to: Date()) else {
             return
         }
@@ -113,33 +150,17 @@ final class TranscriptionStore: ObservableObject {
 
     private func load() {
         let url = fileURL
-        let backupURL = preCleanupBackupURL
         let task = Task {
             do {
                 let loadResult = try await Task.detached {
                     guard FileManager.default.fileExists(atPath: url.path) else {
-                        return (entries: [TranscriptionEntry](), migrated: false)
+                        return [TranscriptionEntry]()
                     }
                     let data = try Data(contentsOf: url)
                     let decoded = try JSONDecoder().decode([TranscriptionEntry].self, from: data)
-                    let cleaned = decoded.compactMap { entry -> TranscriptionEntry? in
-                        let cleanedText = TextProcessor.process(entry.text)
-                        guard !cleanedText.isEmpty else { return nil }
-                        guard cleanedText != entry.text else { return entry }
-                        return TranscriptionEntry(
-                            id: entry.id,
-                            text: cleanedText,
-                            timestamp: entry.timestamp
-                        )
-                    }
-                    let migrated = cleaned.count != decoded.count
-                        || zip(cleaned, decoded).contains { $0.text != $1.text || $0.id != $1.id }
-
-                    // Preserve the original history once before upgrading it.
-                    if migrated, !FileManager.default.fileExists(atPath: backupURL.path) {
-                        try FileManager.default.copyItem(at: url, to: backupURL)
-                    }
-                    return (entries: cleaned, migrated: migrated)
+                    // History is user-authored data. Never run cleanup over stored
+                    // text on load: edits and restored originals must survive relaunch.
+                    return decoded
                 }.value
 
                 guard !Task.isCancelled else { return }
@@ -147,14 +168,14 @@ final class TranscriptionStore: ObservableObject {
                 // Merge: keep any entries created in-memory before load finished
                 let hasNewInMemoryEntries = !entries.isEmpty
                 let inMemoryIDs = Set(entries.map { $0.id })
-                let diskOnly = loadResult.entries.filter { !inMemoryIDs.contains($0.id) }
+                let diskOnly = loadResult.filter { !inMemoryIDs.contains($0.id) }
                 let merged = (entries + diskOnly).sorted { $0.timestamp > $1.timestamp }
                 entries = merged
                 totalWordCount = merged.reduce(0) { $0 + $1.wordCount }
                 isLoaded = true
                 lastError = nil
                 applyRetentionPolicy()
-                if hasNewInMemoryEntries || loadResult.migrated {
+                if hasNewInMemoryEntries {
                     persist()
                 }
             } catch is CancellationError {
@@ -163,6 +184,7 @@ final class TranscriptionStore: ObservableObject {
             } catch {
                 print("[TranscriptionStore] Failed to load transcriptions: \(error)")
                 isLoaded = true
+                loadFailure = error
                 lastError = error
             }
         }
@@ -242,18 +264,13 @@ enum MurmurPreferences {
     }
 
     static var autoDetectLanguage: Bool {
-        get {
-            if UserDefaults.standard.object(forKey: autoDetectLanguageKey) == nil {
-                return true
-            }
-            return UserDefaults.standard.bool(forKey: autoDetectLanguageKey)
-        }
-        set { UserDefaults.standard.set(newValue, forKey: autoDetectLanguageKey) }
+        get { SharedDefaults.autoDetectLanguage }
+        set { SharedDefaults.autoDetectLanguage = newValue }
     }
 
     static var selectedLanguageCodes: [String] {
-        get { UserDefaults.standard.stringArray(forKey: selectedLanguagesKey) ?? ["en"] }
-        set { UserDefaults.standard.set(newValue, forKey: selectedLanguagesKey) }
+        get { SharedDefaults.selectedLanguages }
+        set { SharedDefaults.selectedLanguages = newValue }
     }
 
     static var sessionDuration: DictationSessionDuration {
@@ -268,7 +285,7 @@ enum MurmurPreferences {
     }
 
     static var historyRetention: HistoryRetention {
-        get { HistoryRetention(rawValue: UserDefaults.standard.integer(forKey: historyRetentionKey)) ?? .fourteenDays }
+        get { HistoryRetention(rawValue: UserDefaults.standard.integer(forKey: historyRetentionKey)) ?? .forever }
         set { UserDefaults.standard.set(newValue.rawValue, forKey: historyRetentionKey) }
     }
 
@@ -283,13 +300,20 @@ enum MurmurPreferences {
     /// How dictated text is shaped. `.automatic` follows the field the keyboard
     /// was in; any other value is the user's explicit choice.
     static var formattingSurface: DictationSurface {
-        get {
-            UserDefaults.standard
-                .string(forKey: formattingSurfaceKey)
-                .flatMap(DictationSurface.init(rawValue:)) ?? .automatic
-        }
-        set { UserDefaults.standard.set(newValue.rawValue, forKey: formattingSurfaceKey) }
+        get { DictationSurface(rawValue: SharedDefaults.formattingStyle) ?? .automatic }
+        set { SharedDefaults.formattingStyle = newValue.rawValue }
     }
+
+    static var silenceMode: RecordingSilenceMode {
+        get { UserDefaults.standard.string(forKey: "recordingSilenceMode").flatMap(RecordingSilenceMode.init(rawValue:)) ?? .thinkingTime }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: "recordingSilenceMode") }
+    }
+
+    static var livePreviewEnabled: Bool {
+        get { UserDefaults.standard.object(forKey: "livePreviewEnabled") == nil || UserDefaults.standard.bool(forKey: "livePreviewEnabled") }
+        set { UserDefaults.standard.set(newValue, forKey: "livePreviewEnabled") }
+    }
+
 }
 
 // MARK: - Session duration
@@ -341,6 +365,7 @@ enum DictationSessionDuration: String, CaseIterable, Identifiable {
 // MARK: - History retention
 
 enum HistoryRetention: Int, CaseIterable, Identifiable {
+    case forever = 0
     case oneDay = 1
     case sevenDays = 7
     case fourteenDays = 14
@@ -351,6 +376,7 @@ enum HistoryRetention: Int, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
+        case .forever: return "Forever"
         case .oneDay: return "1 day"
         case .sevenDays: return "7 days"
         case .fourteenDays: return "14 days"
@@ -490,5 +516,25 @@ struct DictationLanguage: Identifiable, Hashable, Sendable {
         ["en", "es", "fr", "de", "it", "pt", "nl", "pl", "ru", "uk", "tr",
          "sv", "no", "da", "fi", "cs", "sk", "sl", "hr", "ro", "hu", "el",
          "bg", "et", "lv", "lt", "mt"].contains(code)
+    }
+}
+
+// Separate from the warm microphone session duration between dictations.
+enum RecordingSilenceMode: String, CaseIterable, Identifiable {
+    case quickMessage, thinkingTime, manual
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .quickMessage: return "Quick message"
+        case .thinkingTime: return "Thinking time"
+        case .manual: return "Stop manually"
+        }
+    }
+    var seconds: TimeInterval? {
+        switch self {
+        case .quickMessage: return 2
+        case .thinkingTime: return 10
+        case .manual: return nil
+        }
     }
 }

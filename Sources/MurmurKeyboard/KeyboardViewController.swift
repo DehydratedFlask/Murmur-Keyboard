@@ -197,6 +197,7 @@ class KeyboardViewController: UIInputViewController {
         viewModel.refreshSharedState()
 
         if viewModel.activeSessionID != nil,
+           viewModel.dictationPhase == .preparing,
            let age = SharedDefaults.dictationSessionAge(),
            age >= dictationTimeout {
             SharedDefaults.abandonDictationSession(reason: "Murmur took too long to respond. Please try again.")
@@ -280,6 +281,9 @@ final class KeyboardViewModel: ObservableObject {
     @Published var isModelWarm = false
     @Published var hasPendingDictation = false
     @Published var dictationPhase: DictationPhase = .idle
+    @Published var displayedDictationText = ""
+    @Published var formattingStyle = SharedDefaults.formattingStyle
+    @Published var dictationLanguage = SharedDefaults.autoDetectLanguage ? "auto" : (SharedDefaults.selectedLanguages.first ?? "en")
     @Published var keyboardType: UIKeyboardType = .default
     @Published var returnKeyType: UIReturnKeyType = .default
     @Published var autocapitalizationType: UITextAutocapitalizationType = .sentences
@@ -296,6 +300,7 @@ final class KeyboardViewModel: ObservableObject {
     private var handoffDismissTask: Task<Void, Never>?
     private var insertionConfirmationTask: Task<Void, Never>?
     private var warmFallbackTask: Task<Void, Never>?
+    private var pauseFallbackTask: Task<Void, Never>?
 
     /// Set when the user cancels from the keyboard, so the failure signal the
     /// container app sends back is not surfaced as an error banner.
@@ -336,6 +341,10 @@ final class KeyboardViewModel: ObservableObject {
     }
 
     func refreshSharedState() {
+        let style = SharedDefaults.formattingStyle
+        if formattingStyle != style { formattingStyle = style }
+        let language = SharedDefaults.autoDetectLanguage ? "auto" : (SharedDefaults.selectedLanguages.first ?? "en")
+        if dictationLanguage != language { dictationLanguage = language }
         let newModelWarm = SharedDefaults.isModelReady()
         if isModelWarm != newModelWarm {
             isModelWarm = newModelWarm
@@ -361,6 +370,8 @@ final class KeyboardViewModel: ObservableObject {
         if dictationPhase != newPhase {
             dictationPhase = newPhase
         }
+        let text = canPaste ? (payload?.text ?? "") : SharedDefaults.livePreview(sessionID: activeSessionID)
+        if displayedDictationText != text { displayedDictationText = text }
     }
 
     func restoreActiveDictationSession() {
@@ -483,9 +494,11 @@ final class KeyboardViewModel: ObservableObject {
     /// banner the user can't act on.
     var showsDictationPanel: Bool {
         switch dictationPhase {
-        case .preparing, .recording, .processing, .failed:
+        case .preparing, .recording, .paused, .processing, .failed:
             return true
-        case .idle, .ready:
+        case .ready:
+            return hasPendingDictation && SharedDefaults.reviewBeforeInsertion
+        case .idle:
             return false
         }
     }
@@ -1058,12 +1071,12 @@ final class KeyboardViewModel: ObservableObject {
             return
         }
         if hasPendingDictation {
-            _ = insertPendingDictationIfAvailable()
+            _ = insertPendingDictationIfAvailable(confirmed: true)
             return
         }
 
         switch dictationPhase {
-        case .recording:
+        case .recording, .paused:
             requestStop()
         case .preparing:
             // Nothing was confirmed for long enough to be useful; drop it and
@@ -1078,7 +1091,11 @@ final class KeyboardViewModel: ObservableObject {
     }
 
     @discardableResult
-    func insertPendingDictationIfAvailable() -> Bool {
+    func insertPendingDictationIfAvailable(confirmed: Bool = false) -> Bool {
+        guard confirmed || !SharedDefaults.reviewBeforeInsertion else {
+            refreshSharedState()
+            return false
+        }
         guard let payload = SharedDefaults.peekPendingTextPayload(),
               let activeSessionID,
               payload.sessionID == nil || payload.sessionID == activeSessionID,
@@ -1113,6 +1130,8 @@ final class KeyboardViewModel: ObservableObject {
 
     private func requestStop() {
         guard let activeSessionID else { return }
+        let wasPaused = dictationPhase == .paused
+        pauseFallbackTask?.cancel()
         triggerMediumHaptic()
         // A pending fallback must never reopen the app now that the user has
         // stopped; it would pull them out of whatever they were typing in.
@@ -1121,14 +1140,17 @@ final class KeyboardViewModel: ObservableObject {
         SharedDefaults.setDictationPhase(.processing, sessionID: activeSessionID)
         SharedDefaults.requestDictationStop(sessionID: activeSessionID)
         refreshSharedState()
+        if wasPaused, let url = URL(string: "murmur://finish") { openContainingApp(url) }
     }
 
     /// Stops recording from the dictation panel and lets Murmur transcribe,
     /// clean up and insert the result.
     func finishDictation() {
         switch dictationPhase {
-        case .recording:
+        case .recording, .paused:
             requestStop()
+        case .ready:
+            _ = insertPendingDictationIfAvailable(confirmed: true)
         case .preparing:
             // The app never confirmed recording. Release the microphone and let
             // the user start again rather than leaving the panel stuck.
@@ -1148,6 +1170,7 @@ final class KeyboardViewModel: ObservableObject {
         triggerMediumHaptic()
         suppressesAbandonmentNotice = true
         warmFallbackTask?.cancel()
+        pauseFallbackTask?.cancel()
 
         SharedDefaults.clearPendingText()
         SharedDefaults.clearDictationContext()
@@ -1222,6 +1245,46 @@ final class KeyboardViewModel: ObservableObject {
     /// Opens the app without starting a dictation (the toolbar's menu button).
     func openMurmurApp() {
         guard let url = URL(string: "murmur://") else { return }
+        openContainingApp(url)
+    }
+
+    func setFormattingStyle(_ style: String) {
+        guard hasFullAccess, dictationPhase == .idle || dictationPhase == .failed else { return }
+        SharedDefaults.formattingStyle = style
+        refreshSharedState()
+    }
+
+    func setDictationLanguage(_ code: String) {
+        guard hasFullAccess, dictationPhase == .idle || dictationPhase == .failed else { return }
+        SharedDefaults.autoDetectLanguage = code == "auto"
+        if code != "auto" {
+            var languages = SharedDefaults.selectedLanguages.filter { $0 != code }
+            languages.insert(code, at: 0)
+            SharedDefaults.selectedLanguages = languages
+        }
+        refreshSharedState()
+    }
+
+    func toggleRecordingPause() {
+        guard let sessionID = activeSessionID, dictationPhase == .recording || dictationPhase == .paused else { return }
+        let desiredPause = dictationPhase != .paused
+        SharedDefaults.requestPause(desiredPause, sessionID: sessionID)
+        pauseFallbackTask?.cancel()
+        if !desiredPause {
+            // iOS can suspend the app while its engine is paused. Resume visibly if needed.
+            pauseFallbackTask = Task { @MainActor in
+                try? await Task.sleep(for: .seconds(1))
+                guard !Task.isCancelled, self.activeSessionID == sessionID,
+                      SharedDefaults.dictationState().phase == .paused,
+                      let url = URL(string: "murmur://resume") else { return }
+                self.openContainingApp(url)
+            }
+        }
+    }
+
+    func editPendingDictation() {
+        guard let entryID = SharedDefaults.peekPendingTextPayload()?.entryID,
+              let url = URL(string: "murmur://edit?id=\(entryID)") else { return }
         openContainingApp(url)
     }
 

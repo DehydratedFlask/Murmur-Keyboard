@@ -41,7 +41,7 @@ enum DictationSurface: String, CaseIterable, Identifiable, Sendable {
         case .search:
             return "A short query with no final period"
         case .verbatim:
-            return "Punctuation only, wording untouched"
+            return "Original recognition output, without cleanup"
         }
     }
 }
@@ -372,7 +372,7 @@ struct TextProcessor {
     }
 
     /// Removes ASR metadata while leaving ordinary bracketed speech intact.
-    private static func removeSpeechArtifacts(from text: String) -> String {
+    static func removeSpeechArtifacts(from text: String, preserveVocalizedPauses: Bool = false) -> String {
         var result = text
         for regex in [
             whisperControlTokenRegex,
@@ -385,7 +385,7 @@ struct TextProcessor {
                 withTemplate: " "
             )
         }
-        if let vocalizedPauseRegex {
+        if !preserveVocalizedPauses, let vocalizedPauseRegex {
             result = vocalizedPauseRegex.stringByReplacingMatches(
                 in: result,
                 range: NSRange(result.startIndex..., in: result),
@@ -611,16 +611,18 @@ enum TranscriptCleanupService {
         contextBefore: String? = nil,
         contextAfter: String? = nil
     ) async -> String {
+        // Verbatim preserves recognition output, including fillers and repetitions.
+        // It still removes non-speech/model artifacts rather than displaying metadata.
+        if surface == .verbatim {
+            let literal = TextProcessor.removeSpeechArtifacts(from: rawText, preserveVocalizedPauses: true)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return TextProcessor.containsReservedMetadata(literal) ? "" : literal
+        }
         let sanitized = TextProcessor.prepareForSemanticCleanup(rawText)
         let prepared = applyDictionaryAliases(in: sanitized, dictionary: dictionary)
         guard !prepared.isEmpty else { return "" }
 
         let fallback = TextProcessor.process(prepared)
-        // Verbatim keeps the words untouched: punctuation and capitalization
-        // only, so the deterministic cleanup is the whole job.
-        if surface == .verbatim {
-            return TextProcessor.containsReservedMetadata(fallback) ? "" : fallback
-        }
         guard prepared.split(whereSeparator: \.isWhitespace).count >= 4 else {
             return fallback
         }

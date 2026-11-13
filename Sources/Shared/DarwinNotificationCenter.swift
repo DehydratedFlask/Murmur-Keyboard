@@ -32,6 +32,7 @@ enum DarwinNotificationCenter {
 
         /// Keyboard → App: the user tapped Stop in the keyboard.
         case dictationStopRequested = "com.murmur.darwin.dictationStopRequested"
+        case dictationPauseRequested = "com.murmur.darwin.dictationPauseRequested"
 
         var cfName: CFNotificationName {
             CFNotificationName(rawValue as CFString)

@@ -7,7 +7,7 @@ enum SharedDefaults {
     // MARK: - App Group
 
     /// The App Group identifier shared between the main app and the keyboard extension.
-    static let appGroupID = "group.com.murmur.dictation"
+    static let appGroupID = "group.murmurkeyboard.shared"
 
     /// The shared `UserDefaults` suite backed by the App Group container.
     nonisolated(unsafe) static let suite: UserDefaults = {
@@ -136,10 +136,77 @@ enum SharedDefaults {
         suite.set(enabled, forKey: keyHapticsKey)
     }
 
+    // MARK: - Dictation preferences and provisional text
+
+    /// One-time migration; both processes subsequently use the App Group values.
+    static func migrateDictationPreferences() {
+        for key in ["formattingSurface", "dictationAutoDetectLanguage", "dictationSelectedLanguages"] {
+            if suite.object(forKey: key) == nil, let value = UserDefaults.standard.object(forKey: key) {
+                suite.set(value, forKey: key)
+            }
+        }
+    }
+
+    static var formattingStyle: String {
+        get { suite.string(forKey: "formattingSurface") ?? "automatic" }
+        set { suite.set(newValue, forKey: "formattingSurface") }
+    }
+
+    static var autoDetectLanguage: Bool {
+        get { suite.object(forKey: "dictationAutoDetectLanguage") == nil || suite.bool(forKey: "dictationAutoDetectLanguage") }
+        set { suite.set(newValue, forKey: "dictationAutoDetectLanguage") }
+    }
+
+    static var selectedLanguages: [String] {
+        get { suite.stringArray(forKey: "dictationSelectedLanguages") ?? ["en"] }
+        set { suite.set(newValue.isEmpty ? ["en"] : newValue, forKey: "dictationSelectedLanguages") }
+    }
+
+    static var languageNames: [String: String] {
+        get { suite.dictionary(forKey: "dictationLanguageNames") as? [String: String] ?? ["en": "English"] }
+        set { suite.set(newValue, forKey: "dictationLanguageNames") }
+    }
+
+    static var reviewBeforeInsertion: Bool {
+        get { suite.bool(forKey: "reviewBeforeInsertion") }
+        set { suite.set(newValue, forKey: "reviewBeforeInsertion") }
+    }
+
+    static func setLivePreview(_ text: String, sessionID: String) {
+        suite.set(["text": String(text.suffix(1500)), "sessionID": sessionID], forKey: "dictationLivePreview")
+    }
+
+    static func livePreview(sessionID: String?) -> String {
+        guard let sessionID,
+              let value = suite.dictionary(forKey: "dictationLivePreview") as? [String: String],
+              value["sessionID"] == sessionID else { return "" }
+        return value["text"] ?? ""
+    }
+
+    static func clearLivePreview() {
+        suite.removeObject(forKey: "dictationLivePreview")
+    }
+
+    /// A desired state rather than a toggle makes duplicate notifications safe.
+    static func requestPause(_ paused: Bool, sessionID: String) {
+        suite.set(["sessionID": sessionID, "paused": paused ? "true" : "false"], forKey: "dictationPauseRequest")
+        DarwinNotificationCenter.post(.dictationPauseRequested)
+    }
+
+    static func consumePauseRequest(sessionID: String?) -> Bool? {
+        guard let sessionID,
+              let value = suite.dictionary(forKey: "dictationPauseRequest") as? [String: String],
+              value["sessionID"] == sessionID else { return nil }
+        suite.removeObject(forKey: "dictationPauseRequest")
+        return value["paused"] == "true"
+    }
+
     // MARK: - Pending Text
 
     /// Stores transcribed text for the keyboard extension to pick up.
-    static func setPendingText(_ text: String, sessionID: String? = nil) {
+    static func setPendingText(_ text: String, sessionID: String? = nil, entryID: String? = nil) {
+        if let entryID { suite.set(entryID, forKey: "pendingTextEntryID") }
+        else { suite.removeObject(forKey: "pendingTextEntryID") }
         suite.set(text, forKey: pendingTextKey)
         suite.set(Date().timeIntervalSince1970, forKey: pendingTextTimestampKey)
         if let sessionID {
@@ -153,7 +220,7 @@ enum SharedDefaults {
     }
 
     /// Reads and clears the pending transcribed text.
-    /// Returns `nil` if no text is pending or if the text is stale (older than 60 seconds).
+    /// Automatic handoff expires after a minute; explicit review allows fifteen minutes.
     static func consumePendingText() -> String? {
         consumePendingTextPayload()?.text
     }
@@ -175,19 +242,22 @@ enum SharedDefaults {
         }
         let timestamp = suite.double(forKey: pendingTextTimestampKey)
         let age = Date().timeIntervalSince1970 - timestamp
-        guard age < pendingTextTTL else {
+        let lifetime = reviewBeforeInsertion ? 15 * 60.0 : pendingTextTTL
+        guard age < lifetime else {
             clearPendingText()
             return nil
         }
         return PendingTextPayload(
             text: text,
             sessionID: suite.string(forKey: pendingTextSessionIDKey),
+            entryID: suite.string(forKey: "pendingTextEntryID"),
             timestamp: Date(timeIntervalSince1970: timestamp)
         )
     }
 
     /// Clears any pending transcribed text.
     static func clearPendingText() {
+        suite.removeObject(forKey: "pendingTextEntryID")
         suite.removeObject(forKey: pendingTextKey)
         suite.removeObject(forKey: pendingTextTimestampKey)
         suite.removeObject(forKey: pendingTextSessionIDKey)
@@ -212,6 +282,8 @@ enum SharedDefaults {
     // MARK: - Dictation Session
 
     static func beginDictationSession(sessionID: String) {
+        clearLivePreview()
+        suite.removeObject(forKey: "dictationPauseRequest")
         suite.set(sessionID, forKey: dictationSessionIDKey)
         suite.set(Date().timeIntervalSince1970, forKey: dictationSessionTimestampKey)
         suite.set(false, forKey: dictationAbandonedKey)
@@ -227,14 +299,23 @@ enum SharedDefaults {
             return nil
         }
 
-        let timestamp = suite.double(forKey: dictationSessionTimestampKey)
-        if timestamp > 0 {
-            let age = Date().timeIntervalSince1970 - timestamp
-            if age >= TimeInterval(dictationSessionDurationMinutes() * 60) {
-                abandonDictationSession(reason: "Dictation timed out.")
-                clearDictationSession()
-                return nil
-            }
+        let phase = dictationState().phase
+        let timestamp = phase == .ready
+            ? suite.double(forKey: pendingTextTimestampKey)
+            : suite.double(forKey: dictationSessionTimestampKey)
+        let lifetime: TimeInterval
+        switch phase {
+        case .recording, .paused, .processing:
+            lifetime = 60 * 60
+        case .ready:
+            lifetime = reviewBeforeInsertion ? 15 * 60 : pendingTextTTL
+        default:
+            lifetime = TimeInterval(dictationSessionDurationMinutes() * 60)
+        }
+        if timestamp > 0, Date().timeIntervalSince1970 - timestamp >= lifetime {
+            abandonDictationSession(reason: "Dictation timed out. Saved text and recordings remain in Murmur.")
+            clearDictationSession()
+            return nil
         }
 
         return sessionID
@@ -247,6 +328,8 @@ enum SharedDefaults {
     }
 
     static func clearDictationSession() {
+        clearLivePreview()
+        suite.removeObject(forKey: "dictationPauseRequest")
         suite.removeObject(forKey: dictationSessionIDKey)
         suite.removeObject(forKey: dictationSessionTimestampKey)
         suite.removeObject(forKey: dictationFailureReasonKey)
@@ -442,6 +525,7 @@ enum SharedDefaults {
 struct PendingTextPayload: Sendable {
     let text: String
     let sessionID: String?
+    let entryID: String?
     let timestamp: Date
 }
 
@@ -454,6 +538,7 @@ enum DictationPhase: String, Sendable {
     case idle
     case preparing
     case recording
+    case paused
     case processing
     case ready
     case failed
