@@ -229,18 +229,36 @@ final class MurmurKeyCapView: UIView {
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         guard isTrackingTouch,
               let touch = touches.first,
-              touch === activeTouch,
-              let paletteView
+              touch === activeTouch
         else { return }
 
-        let index = paletteView.index(at: touch.location(in: paletteView))
-        if index != selectedAlternate {
-            selectedAlternate = index
-            paletteView.select(index: index)
-            if index >= 0 {
-                onSelectionChange?()
+        if let paletteView {
+            let index = paletteView.index(at: touch.location(in: paletteView))
+            if index != selectedAlternate {
+                selectedAlternate = index
+                paletteView.select(index: index)
+                if index >= 0 {
+                    onSelectionChange?()
+                }
             }
+            return
         }
+
+        let point = touch.location(in: self)
+        let dx = point.x - touchOrigin.x
+        let dy = point.y - touchOrigin.y
+
+        // Apple cancels a key once the finger wanders off it, and nothing is
+        // typed. The character was typed on touch-down, so take it back.
+        guard !isCancelled, (dx * dx + dy * dy) > 40 * 40 else { return }
+        isCancelled = true
+        setHighlighted(false)
+        dismissOverlays()
+        if hasCommittedPress {
+            hasCommittedPress = false
+            onRetract?()
+        }
+        finishTouch()
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
@@ -253,8 +271,9 @@ final class MurmurKeyCapView: UIView {
             if selectedAlternate >= 0, selectedAlternate < style.alternatives.count {
                 onInsert?(style.alternatives[selectedAlternate])
             }
-        } else if style.insertText == nil {
-            // Mode keys (shift, 123, return) still act on release.
+        } else if style.insertText == nil, !isCancelled {
+            // Mode keys (shift, 123, return) act on release, unless the finger
+            // slid off the key.
             onTap?()
         }
 
@@ -298,7 +317,8 @@ final class MurmurKeyCapView: UIView {
     private func schedulePalette() {
         paletteTask?.cancel()
         paletteTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(0.42))
+            // Apple's accent palette opens after about half a second of holding.
+            try? await Task.sleep(for: .milliseconds(500))
             guard !Task.isCancelled else { return }
             self?.showPaletteIfStillHolding()
         }

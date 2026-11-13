@@ -308,8 +308,6 @@ final class KeyboardViewModel: ObservableObject {
 
     // Continuous backspace
     private var backspaceTimer: Timer?
-    private var backspaceStartTime: Date?
-    private var lastWordDeleteTime: Date?
 
     // Double-space period shortcut
     private var lastSpaceTime: Date?
@@ -546,12 +544,32 @@ final class KeyboardViewModel: ObservableObject {
     func insertCharacter(_ character: String) {
         if Self.punctuationCommittingWord.contains(character) {
             autocorrectTrailingWord()
+            // Apple drops a space typed just before punctuation: "Hello ,"
+            // becomes "Hello,".
+            removeSpaceBeforePunctuation()
         } else {
             lastCorrection = nil
         }
         textDocumentProxy?.insertText(character)
         lastSpaceTime = nil
         lastPressCommit = character
+    }
+
+    /// Removes the single space before a punctuation mark, as the system
+    /// keyboard does, but only when a word (or a closing bracket) precedes it.
+    private func removeSpaceBeforePunctuation() {
+        guard let proxy = textDocumentProxy,
+              let context = proxy.documentContextBeforeInput,
+              context.hasSuffix(" ")
+        else { return }
+
+        guard let beforeSpace = String(context.dropLast()).last,
+              beforeSpace.isLetter
+                || beforeSpace.isNumber
+                || [")", "]", "\"", "'"].contains(beforeSpace)
+        else { return }
+
+        proxy.deleteBackward()
     }
 
     func insertAlternate(_ character: String) {
@@ -946,46 +964,28 @@ final class KeyboardViewModel: ObservableObject {
         if !revertLastCorrection() {
             textDocumentProxy?.deleteBackward()
         }
-        backspaceStartTime = Date()
-        lastWordDeleteTime = nil
         lastSpaceTime = nil
-        backspaceTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] _ in
+
+        // Apple's keyboard: one character on touch-down, then a held key repeats
+        // at a steady rate after a short delay. It never jumps to deleting whole
+        // words, and the timer runs in the common modes so it keeps ticking while
+        // the finger is down.
+        let timer = Timer(
+            fire: Date().addingTimeInterval(0.4),
+            interval: 0.1,
+            repeats: true
+        ) { [weak self] _ in
             Task { @MainActor in
-                guard let self, let start = self.backspaceStartTime else { return }
-                let now = Date()
-                let elapsed = now.timeIntervalSince(start)
-                if elapsed > 1.6 {
-                    if self.lastWordDeleteTime == nil ||
-                        now.timeIntervalSince(self.lastWordDeleteTime!) >= 0.24 {
-                        self.deleteWordBackward()
-                        self.lastWordDeleteTime = now
-                    }
-                } else if elapsed > 0.12 {
-                    self.textDocumentProxy?.deleteBackward()
-                }
+                self?.textDocumentProxy?.deleteBackward()
             }
         }
+        RunLoop.main.add(timer, forMode: .common)
+        backspaceTimer = timer
     }
 
     func stopContinuousDelete() {
         backspaceTimer?.invalidate()
         backspaceTimer = nil
-        backspaceStartTime = nil
-        lastWordDeleteTime = nil
-    }
-
-    private func deleteWordBackward() {
-        guard let proxy = textDocumentProxy, let context = proxy.documentContextBeforeInput, !context.isEmpty else {
-            textDocumentProxy?.deleteBackward()
-            return
-        }
-        let trimmed = context as NSString
-        let range = trimmed.rangeOfCharacter(from: .whitespacesAndNewlines, options: .backwards)
-        let count = range.location == NSNotFound ? context.count : (context.count - range.location - range.length)
-        let toDelete = max(count, 1)
-        for _ in 0..<toDelete {
-            proxy.deleteBackward()
-        }
     }
 
     private func canReplaceDoubleSpace(in context: String) -> Bool {
