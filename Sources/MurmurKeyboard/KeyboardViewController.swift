@@ -10,6 +10,10 @@ class KeyboardViewController: UIInputViewController {
     private var hostingController: UIHostingController<KeyboardView>?
     private var pendingTextTimer: Timer?
     private var heightConstraint: NSLayoutConstraint?
+    /// Last time the field's traits were read, for the typing-path throttle.
+    private var lastTraitRefresh: Date?
+    /// A text-change pass is already queued for the next runloop turn.
+    private var textChangeScheduled = false
 
     /// Stale-session timeout, driven by the app's Session duration setting.
     private var dictationTimeout: TimeInterval {
@@ -109,13 +113,6 @@ class KeyboardViewController: UIInputViewController {
         viewModel.refreshSharedState()
         startDarwinObservers()
         startPendingTextTimer()
-
-        // Let the keyboard settle, then load the on-device spell checker while
-        // the user is reading the field rather than mid-keystroke.
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(700))
-            self?.viewModel.warmUpSpellChecker()
-        }
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -135,24 +132,41 @@ class KeyboardViewController: UIInputViewController {
 
     override func textDidChange(_ textInput: UITextInput?) {
         super.textDidChange(textInput)
+
+        // Never touch the text proxy from inside its own change callback. Doing
+        // that re-enters the host's text system, and several hosts (Notes among
+        // them) will block there — the keyboard then looks frozen: keys highlight
+        // and nothing arrives. Coalesce every change into one pass on the next
+        // runloop turn instead.
+        guard !textChangeScheduled else { return }
+        textChangeScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.textChangeScheduled = false
+            self.processTextChange()
+        }
+    }
+
+    private func processTextChange() {
         viewModel.textDocumentProxy = textDocumentProxy
 
-        // One read of the field's text, shared by everything below. Reading the
-        // rest of the traits here cost several more trips into the host app on
-        // every single keystroke, and a saturated main thread is what makes a
-        // fast typist feel keys disappear. Traits change when the field changes,
-        // which is what textWillChange is for.
         let context = textDocumentProxy.documentContextBeforeInput ?? ""
+        refreshTraitsIfStale()
         viewModel.refreshReturnKeyState(context: context)
         viewModel.autoCapitalize(context: context)
         viewModel.refreshSuggestions(context: context)
     }
 
-    override func textWillChange(_ textInput: UITextInput?) {
-        super.textWillChange(textInput)
-        viewModel.textDocumentProxy = textDocumentProxy
+    /// Traits change when the field changes, not per letter. A short throttle
+    /// keeps the layout and appearance right without paying for it on every
+    /// keystroke.
+    private func refreshTraitsIfStale() {
+        let now = Date()
+        if let last = lastTraitRefresh, now.timeIntervalSince(last) < 0.6 {
+            return
+        }
+        lastTraitRefresh = now
         viewModel.refreshTextTraits(interfaceStyle: traitCollection.userInterfaceStyle)
-        viewModel.autoCapitalize()
     }
 
     // MARK: - Pending Text Handling
@@ -480,20 +494,20 @@ final class KeyboardViewModel: ObservableObject {
 
     // MARK: - Haptics
 
-    /// The system key click always plays, as on Apple's keyboard (and obeys the
-    /// Key clicks switch in Settings › Sounds & Haptics). The extra impact is
-    /// what the Key haptics setting controls, so a silent-typing user still
-    /// hears nothing if they have muted key clicks system-wide.
+    /// Key feedback is off unless the user turns on Key haptics. Keeping every
+    /// keystroke free of audio-system calls matters: `playInputClick()` goes
+    /// through Core Audio, and typing while the app still holds a
+    /// play-and-record session could block the keyboard's main thread.
     func triggerLightHaptic() {
-        UIDevice.current.playInputClick()
         guard SharedDefaults.isKeyHapticsEnabled(), hasFullAccess else { return }
+        UIDevice.current.playInputClick()
         lightHaptic.impactOccurred()
         lightHaptic.prepare()
     }
 
     func triggerMediumHaptic() {
-        UIDevice.current.playInputClick()
         guard SharedDefaults.isKeyHapticsEnabled(), hasFullAccess else { return }
+        UIDevice.current.playInputClick()
         mediumHaptic.impactOccurred()
         mediumHaptic.prepare()
     }
@@ -542,9 +556,13 @@ final class KeyboardViewModel: ObservableObject {
 
     func insertAlternate(_ character: String) {
         lastCorrection = nil
-        textDocumentProxy?.insertText(character)
+        // Resolve the case here instead of trusting the key's label: with the
+        // text bookkeeping deferred by a runloop turn, a stale shift state would
+        // otherwise type the rest of the sentence in capitals.
+        let resolved = isUppercase ? character.uppercased() : character.lowercased()
+        textDocumentProxy?.insertText(resolved)
         lastSpaceTime = nil
-        lastPressCommit = character
+        lastPressCommit = resolved
         if isShifted && !isCapsLocked {
             isShifted = false
         }
@@ -1047,7 +1065,11 @@ final class KeyboardViewModel: ObservableObject {
         switch dictationPhase {
         case .recording:
             requestStop()
-        case .preparing, .processing, .ready:
+        case .preparing:
+            // Nothing was confirmed for long enough to be useful; drop it and
+            // start over instead of leaving a dead Start button.
+            retryDictation()
+        case .processing, .ready:
             break
         case .idle, .failed:
             triggerLightHaptic()
@@ -1104,8 +1126,16 @@ final class KeyboardViewModel: ObservableObject {
     /// Stops recording from the dictation panel and lets Murmur transcribe,
     /// clean up and insert the result.
     func finishDictation() {
-        guard dictationPhase == .recording else { return }
-        requestStop()
+        switch dictationPhase {
+        case .recording:
+            requestStop()
+        case .preparing:
+            // The app never confirmed recording. Release the microphone and let
+            // the user start again rather than leaving the panel stuck.
+            cancelDictation()
+        default:
+            break
+        }
     }
 
     /// Drops the current dictation. Nothing is inserted into the document, and
@@ -1218,17 +1248,10 @@ final class KeyboardViewModel: ObservableObject {
         SharedDefaults.beginDictationSession(sessionID: sessionID)
         SharedDefaults.setDictationRequested(true)
 
-        // Warm session: the app is still running, so it can start recording in
-        // the background. While the model is still loading we still ask it and
-        // wait rather than dragging the user into the app.
-        let canAskInBackground = SharedDefaults.isAppAlive()
-            && (SharedDefaults.isWarmSessionActive() || !isModelWarm)
-        if canAskInBackground {
-            DarwinNotificationCenter.post(.dictationRequested)
-            scheduleWarmFallback(for: sessionID)
-            return
-        }
-
+        // Always bring the app forward for a dictation. Starting audio from the
+        // background raced the app's own start and left the keyboard on
+        // "Starting…" with the microphone open and nothing to stop, so the
+        // reliable path — the app records in the foreground — is the only path.
         guard let url = URL(string: "murmur://dictate") else { return }
         openContainingApp(url)
     }

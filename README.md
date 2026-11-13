@@ -31,8 +31,8 @@ Dictation apps give you a transcript. Murmur gives you a **message**:
 - Snippets: expand a short trigger ("omw") into longer text while you dictate
 - Language selection or auto-detect, session duration, and a configurable history window
 - Custom iOS keyboard with microphone handoff and automatic result insertion
-- System-style typing: character pop-ups, accented variants, and the key click
-  on touch-down rather than on lift
+- System-style typing: character pop-ups, accented variants, and the press
+  registered on touch-down rather than on lift
 - Autocorrection that waits until you commit the word, puts the original back
   on a single delete, and offers the fix as a tap-to-apply suggestion
 - Live Activity in the Dynamic Island: a waveform icon and a running timer while you dictate

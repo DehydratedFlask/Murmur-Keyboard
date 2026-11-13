@@ -298,6 +298,7 @@ struct KeyboardView: View {
                     systemImage: viewModel.dictationPhase == .failed ? "arrow.clockwise" : "checkmark",
                     isPrimary: true,
                     enabled: viewModel.dictationPhase == .recording
+                        || viewModel.dictationPhase == .preparing
                         || viewModel.dictationPhase == .failed,
                     label: viewModel.dictationPhase == .failed ? "Try again" : "Finish dictation",
                     hint: viewModel.dictationPhase == .failed

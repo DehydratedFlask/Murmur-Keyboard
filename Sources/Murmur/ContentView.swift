@@ -220,15 +220,24 @@ struct ContentView: View {
             if appState.shouldStartDictation {
                 appState.shouldStartDictation = false
 
-                // If there is already an active keyboard dictation in progress,
-                // ignore the duplicate trigger instead of tearing recording down.
-                guard !isDictationFromKeyboard || !recorder.isRecording else { return }
+                // A duplicate request — two taps, or a redirect arriving while
+                // a start is in flight — must not tear down work in progress.
+                // Doing that left the keyboard on "Starting…" with the
+                // microphone open and the checkmark disabled.
+                guard !recorder.isStarting, !recorder.isRecording else { return }
 
                 // Cancel any prior stale / background task before starting new work.
                 dictationTask?.cancel()
 
+                // The keyboard's session id is the source of truth for whether
+                // this dictation belongs to it — the one-shot request flag can
+                // already have been consumed by a duplicate.
+                let sharedState = SharedDefaults.dictationState()
                 isDictationFromKeyboard = SharedDefaults.consumeDictationRequested()
-                keyboardDictationSessionID = isDictationFromKeyboard ? SharedDefaults.currentDictationSessionID() : nil
+                    || (sharedState.phase == .preparing && sharedState.sessionID != nil)
+                keyboardDictationSessionID = isDictationFromKeyboard
+                    ? (SharedDefaults.currentDictationSessionID() ?? sharedState.sessionID)
+                    : nil
                 keyboardCompletionMessage = nil
 
                 dictationTask = handleDictationRequest()
@@ -1206,6 +1215,18 @@ struct ContentView: View {
     /// and the silent retry.
     private func didStartRecording() {
         MurmurDictationLiveActivity.start()
+
+        // Trust the shared session as well as the local flag: a duplicate
+        // request can consume the one-shot flag before this runs, and then the
+        // keyboard would sit on "Starting…" while the microphone was open.
+        if !isDictationFromKeyboard {
+            let state = SharedDefaults.dictationState()
+            if state.phase == .preparing, let sessionID = SharedDefaults.currentDictationSessionID() {
+                isDictationFromKeyboard = true
+                keyboardDictationSessionID = sessionID
+            }
+        }
+
         guard isDictationFromKeyboard, let keyboardDictationSessionID else { return }
 
         SharedDefaults.setDictationPhase(
