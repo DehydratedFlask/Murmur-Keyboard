@@ -23,17 +23,24 @@ Dictation apps give you a transcript. Murmur gives you a **message**:
 - Transcribes speech on-device with [WhisperKit](https://github.com/argmaxinc/WhisperKit)
   or [NVIDIA Parakeet](https://github.com/FluidInference/FluidAudio) on the Neural Engine
 - Restores sentence boundaries, capitalization, commas, periods, question marks, contractions, paragraph breaks
-- Removes filled pauses, repeated words, abandoned fragments, self-corrections, and ASR artifacts like `[Pause]` and `[BLANK_AUDIO]`
+- Removes filled pauses, repeated words, abandoned fragments, self-corrections, and ASR artifacts like `[Pause]` and `[BLANK_AUDIO]` — anywhere in a sentence, not just at the start
+- Voice-activity segmentation before transcription: only the stretches that contain speech reach the model, so a fan, a TV or room tone cannot turn into invented words
+- Context-aware formatting: the keyboard tells the formatter which kind of field you were in (chat, email, search) and what text surrounds the cursor, so a reply stays a reply and a continuation joins the sentence it continues
 - Preserves meaning-bearing words, names, numbers, negation — and your voice
 - Personal dictionary with preferred spellings, "sounds like" aliases, per-entry toggles
 - Snippets: expand a short trigger ("omw") into longer text while you dictate
 - Language selection or auto-detect, session duration, and a configurable history window
 - Custom iOS keyboard with microphone handoff and automatic result insertion
+- System-style typing: character pop-ups, accented variants, and the key click
+  on touch-down rather than on lift
+- Autocorrection that waits until you commit the word, puts the original back
+  on a single delete, and offers the fix as a tap-to-apply suggestion
 - Live Activity in the Dynamic Island: a waveform icon and a running timer while you dictate
 - iOS 17+ with Liquid Glass adoption on newer systems
 
-No predictive text, no autocorrect, no swipe. Just a familiar keyboard with
-reliable voice handoff and polished dictation.
+Murmur types the way the system keyboard does — pop-ups, accents, autocorrect
+and a suggestion above the keys — plus reliable voice handoff and polished
+dictation. No swipe typing and no second keyboard to learn.
 
 ## The pipeline: formatter, not rewriter
 

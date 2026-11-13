@@ -14,32 +14,6 @@ private let keyboardAlternateLetters: [String: [String]] = [
     "y": ["y", "ÿ"],
     "z": ["z", "ž", "ź", "ż"],
 ]
-private let keyboardLeftEdgeKeys: Set<String> = [
-    "Q", "A", "Z", "1", "-", "[", ".",
-]
-private let keyboardRightEdgeKeys: Set<String> = [
-    "P", "L", "M", "0", "\"", "=", "'",
-]
-
-/// Shared coordinate space so a pressed key can publish where its popup goes.
-private let keyboardCoordinateSpace = "murmurKeyboardSpace"
-
-private struct PressedKeyInfo: Equatable {
-    let text: String
-    let center: CGPoint
-}
-
-/// Carries the pressed key up to the keyboard root, which draws the popup above
-/// every row so nothing can clip or cover it.
-private struct PressedKeyInfoKey: PreferenceKey {
-    static var defaultValue: PressedKeyInfo? { nil }
-
-    static func reduce(value: inout PressedKeyInfo?, nextValue: () -> PressedKeyInfo?) {
-        if let next = nextValue() {
-            value = next
-        }
-    }
-}
 
 /// The main SwiftUI keyboard view — native iOS QWERTY layout with a
 /// Murmur dictation button integrated into the predictive-text row.
@@ -47,7 +21,6 @@ struct KeyboardView: View {
     @ObservedObject var viewModel: KeyboardViewModel
 
     @Environment(\.verticalSizeClass) private var verticalSizeClass
-    @State private var backspaceLongPressed = false
 
     /// Murmur's accent, matching the container app so the keyboard reads as
     /// the same product rather than a generic extension.
@@ -98,19 +71,8 @@ struct KeyboardView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background { keyboardBackdrop }
         // One flat keyboard surface: no inset card, so there is no seam between
-        // the keys and the area around them.
-        .coordinateSpace(name: keyboardCoordinateSpace)
-        .overlayPreferenceValue(PressedKeyInfoKey.self) { info in
-            if let info {
-                KeyPopup(text: info.text, isDarkMode: viewModel.isDarkMode)
-                    .position(
-                        x: info.center.x,
-                        y: info.center.y - keyHeight / 2 - 26
-                    )
-                    .allowsHitTesting(false)
-            }
-        }
-
+        // the keys and the area around them. Key popups are drawn by the keys
+        // themselves, so nothing here can clip them.
         .animation(.snappy(duration: 0.18), value: viewModel.showNumbers)
         .animation(.snappy(duration: 0.18), value: viewModel.showSymbols)
         .animation(.snappy(duration: 0.24), value: viewModel.showsDictationPanel)
@@ -170,6 +132,11 @@ struct KeyboardView: View {
             .accessibilityLabel("Open Murmur")
             .accessibilityHint("Opens the Murmur app.")
 
+            if let suggestion = viewModel.suggestions.first {
+                suggestionChip(suggestion)
+                    .transition(.opacity)
+            }
+
             Spacer(minLength: 8)
 
             dictationPill
@@ -178,6 +145,34 @@ struct KeyboardView: View {
         .padding(.top, 8)
         .padding(.bottom, 4)
         .frame(height: predictionRowHeight + 12)
+    }
+
+    /// The correction the keyboard would make, shown before it happens — the
+    /// same job Apple's prediction bar does. Tapping it applies it immediately.
+    private func suggestionChip(_ suggestion: String) -> some View {
+        Button {
+            viewModel.applySuggestion(suggestion)
+        } label: {
+            Text(suggestion)
+                .font(.system(size: 17, weight: .regular))
+                .foregroundStyle(toolbarForeground)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+                .padding(.horizontal, 12)
+                .frame(height: dictationPillHeight)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(
+                            viewModel.isDarkMode
+                                ? Color.white.opacity(0.10)
+                                : Color.black.opacity(0.06)
+                        )
+                )
+                .contentShape(Capsule(style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Replace with \(suggestion)")
+        .accessibilityHint("Fixes the word you are typing.")
     }
 
     private var toolbarForeground: Color {
@@ -558,25 +553,35 @@ struct KeyboardView: View {
 
     // MARK: - Key Views
 
+    // Every key below is a UIKit view (see KeyboardKey.swift) rather than a
+    // SwiftUI Button or a drag gesture, so a fast tap can never be dropped and
+    // the click lands on touch-down, as on Apple's keyboard.
+
     private func letterKey(_ letter: String) -> some View {
         let displayLetter = viewModel.isUppercase ? letter : letter.lowercased()
         let alternatives = alternateLetters(for: displayLetter)
-        return AlternateInputKey(
-            displayText: displayLetter,
-            alternatives: alternatives,
-            isDarkMode: viewModel.isDarkMode,
-            paletteAlignment: paletteAlignment(for: displayLetter),
-            action: viewModel.insertAlternate
-        ) {
-            Text(displayLetter)
-                .font(.system(size: 24, weight: .light))
-                .frame(maxWidth: .infinity)
-                .frame(height: keyHeight)
-                .background { keySurface() }
-        }
-        .foregroundStyle(keyTextColor)
-        .accessibilityLabel(displayLetter)
-        .accessibilityHint(alternatives.isEmpty ? "" : "Touch and hold for alternate characters.")
+        return KeyboardKey(
+            style: KeyboardKeyStyle(
+                title: displayLetter,
+                font: .systemFont(ofSize: 24, weight: .light),
+                glyphColor: keyTextUIColor,
+                capColor: letterCapUIColor,
+                pressedCapColor: letterPressedCapUIColor,
+                showsPopup: true,
+                alternatives: alternatives,
+                insertText: displayLetter,
+                isDarkMode: viewModel.isDarkMode,
+                accessibilityLabel: displayLetter,
+                accessibilityHint: alternatives.isEmpty
+                    ? nil
+                    : "Touch and hold for alternate characters."
+            ),
+            onTouchDown: { viewModel.triggerLightHaptic() },
+            onInsert: { viewModel.insertAlternate($0) },
+            onSelectionChange: { viewModel.triggerSelectionHaptic() }
+        )
+        .frame(maxWidth: .infinity)
+        .frame(height: keyHeight)
     }
 
     private func characterKey(
@@ -585,102 +590,112 @@ struct KeyboardView: View {
         alternatives: [String]? = nil
     ) -> some View {
         let availableAlternatives = alternatives ?? alternateSymbols(for: character)
-        return AlternateInputKey(
-            displayText: character,
-            alternatives: availableAlternatives,
-            isDarkMode: viewModel.isDarkMode,
-            paletteAlignment: fixedWidth == nil
-                ? paletteAlignment(for: character)
-                : .trailing,
-            action: viewModel.insertCharacter
-        ) {
-            Text(character)
-                .font(.system(size: 22, weight: .regular))
-                .frame(maxWidth: fixedWidth == nil ? .infinity : nil)
-                .frame(width: fixedWidth)
-                .frame(height: keyHeight)
-                .background { keySurface() }
-        }
-        .foregroundStyle(keyTextColor)
-        .accessibilityLabel(character)
-        .accessibilityHint(availableAlternatives.isEmpty ? "" : "Touch and hold for alternate characters.")
+        return KeyboardKey(
+            style: KeyboardKeyStyle(
+                title: character,
+                font: .systemFont(ofSize: 22, weight: .regular),
+                glyphColor: keyTextUIColor,
+                capColor: letterCapUIColor,
+                pressedCapColor: letterPressedCapUIColor,
+                showsPopup: true,
+                alternatives: availableAlternatives,
+                insertText: character,
+                isDarkMode: viewModel.isDarkMode,
+                accessibilityLabel: character,
+                accessibilityHint: availableAlternatives.isEmpty
+                    ? nil
+                    : "Touch and hold for alternate characters."
+            ),
+            onTouchDown: { viewModel.triggerLightHaptic() },
+            onInsert: { viewModel.insertCharacter($0) },
+            onSelectionChange: { viewModel.triggerSelectionHaptic() }
+        )
+        .frame(maxWidth: fixedWidth == nil ? .infinity : nil)
+        .frame(width: fixedWidth)
+        .frame(height: keyHeight)
     }
 
     private var shiftKey: some View {
-        Button {
-            viewModel.triggerMediumHaptic()
-            viewModel.toggleShift()
-        } label: {
-            Image(systemName: viewModel.isCapsLocked ? "capslock.fill" :
-                    (viewModel.isShifted ? "shift.fill" : "shift"))
-                .font(.system(size: 16, weight: .medium))
-                .frame(width: 46, height: keyHeight)
-                .background {
-                    keySurface(isAction: !(viewModel.isShifted || viewModel.isCapsLocked))
-                }
-        }
-        .buttonStyle(IOSKeyboardPressStyle(isDarkMode: viewModel.isDarkMode))
-        .foregroundStyle(keyTextColor)
-        .accessibilityLabel(viewModel.isCapsLocked ? "Caps Lock on" : (viewModel.isShifted ? "Shift on" : "Shift"))
+        KeyboardKey(
+            style: KeyboardKeyStyle(
+                symbolName: shiftSymbolName,
+                glyphColor: keyTextUIColor,
+                capColor: actionCapUIColor,
+                pressedCapColor: actionPressedCapUIColor,
+                isDarkMode: viewModel.isDarkMode,
+                accessibilityLabel: shiftAccessibilityLabel
+            ),
+            onTouchDown: { viewModel.triggerMediumHaptic() },
+            onTap: { viewModel.toggleShift() }
+        )
+        .frame(width: 46)
+        .frame(height: keyHeight)
+    }
+
+    private var shiftSymbolName: String {
+        if viewModel.isCapsLocked { return "capslock.fill" }
+        return viewModel.isShifted ? "shift.fill" : "shift"
+    }
+
+    private var shiftAccessibilityLabel: String {
+        if viewModel.isCapsLocked { return "Caps Lock on" }
+        return viewModel.isShifted ? "Shift on" : "Shift"
     }
 
     private var backspaceKey: some View {
-        Image(systemName: "delete.left")
-            .font(.system(size: 16, weight: .medium))
-            .foregroundStyle(keyTextColor)
-            .frame(width: 46, height: keyHeight)
-            .background { keySurface(isAction: true) }
-            .onLongPressGesture(
-                minimumDuration: 0.4,
-                maximumDistance: 20,
-                perform: {
-                    viewModel.startContinuousDelete()
-                    backspaceLongPressed = true
-                },
-                onPressingChanged: { pressing in
-                    if pressing {
-                        // finger down — wait
-                    } else if backspaceLongPressed {
-                        viewModel.stopContinuousDelete()
-                        backspaceLongPressed = false
-                    } else {
-                        viewModel.deleteBackward()
-                    }
-                }
-            )
-            .accessibilityLabel("Delete")
-            .accessibilityAddTraits(.isButton)
-            .accessibilityAction {
-                viewModel.deleteBackward()
-            }
+        KeyboardKey(
+            style: KeyboardKeyStyle(
+                symbolName: "delete.left",
+                glyphColor: keyTextUIColor,
+                capColor: actionCapUIColor,
+                pressedCapColor: actionPressedCapUIColor,
+                isDarkMode: viewModel.isDarkMode,
+                accessibilityLabel: "Delete",
+                accessibilityHint: "Touch and hold to delete faster."
+            ),
+            onTouchDown: { viewModel.startContinuousDelete() },
+            onTouchEnd: { viewModel.stopContinuousDelete() }
+        )
+        .frame(width: 46)
+        .frame(height: keyHeight)
     }
 
     private var numberToggleKey: some View {
-        Button {
-            viewModel.triggerLightHaptic()
-            viewModel.toggleNumbers()
-        } label: {
-            Text(viewModel.showNumbers || viewModel.showSymbols ? "ABC" : "123")
-                .font(.system(size: 16, weight: .medium))
-                .frame(width: bottomSideKeyWidth, height: keyHeight)
-                .background { keySurface(isAction: true) }
-        }
-        .buttonStyle(IOSKeyboardPressStyle(isDarkMode: viewModel.isDarkMode))
-        .foregroundStyle(keyTextColor)
+        KeyboardKey(
+            style: KeyboardKeyStyle(
+                title: viewModel.showNumbers || viewModel.showSymbols ? "ABC" : "123",
+                font: .systemFont(ofSize: 16, weight: .medium),
+                glyphColor: keyTextUIColor,
+                capColor: actionCapUIColor,
+                pressedCapColor: actionPressedCapUIColor,
+                isDarkMode: viewModel.isDarkMode,
+                accessibilityLabel: viewModel.showNumbers || viewModel.showSymbols
+                    ? "Letters"
+                    : "Numbers"
+            ),
+            onTouchDown: { viewModel.triggerLightHaptic() },
+            onTap: { viewModel.toggleNumbers() }
+        )
+        .frame(width: bottomSideKeyWidth)
+        .frame(height: keyHeight)
     }
 
     private var symbolToggleKey: some View {
-        Button {
-            viewModel.triggerLightHaptic()
-            viewModel.toggleSymbols()
-        } label: {
-            Text(viewModel.showSymbols ? "123" : "#+=")
-                .font(.system(size: 15, weight: .medium))
-                .frame(width: 46, height: keyHeight)
-                .background { keySurface(isAction: true) }
-        }
-        .buttonStyle(IOSKeyboardPressStyle(isDarkMode: viewModel.isDarkMode))
-        .foregroundStyle(keyTextColor)
+        KeyboardKey(
+            style: KeyboardKeyStyle(
+                title: viewModel.showSymbols ? "123" : "#+=",
+                font: .systemFont(ofSize: 15, weight: .medium),
+                glyphColor: keyTextUIColor,
+                capColor: actionCapUIColor,
+                pressedCapColor: actionPressedCapUIColor,
+                isDarkMode: viewModel.isDarkMode,
+                accessibilityLabel: viewModel.showSymbols ? "Numbers" : "Symbols"
+            ),
+            onTouchDown: { viewModel.triggerLightHaptic() },
+            onTap: { viewModel.toggleSymbols() }
+        )
+        .frame(width: 46)
+        .frame(height: keyHeight)
     }
 
     private var spaceKey: some View {
@@ -691,26 +706,27 @@ struct KeyboardView: View {
     }
 
     private var returnKey: some View {
-        Button {
-            viewModel.insertReturn()
-        } label: {
-            Group {
-                if returnKeyUsesSymbol {
-                    Image(systemName: returnKeySymbol)
-                        .font(.system(size: 17, weight: .semibold))
-                } else {
-                    Text(returnKeyTitle)
-                        .font(.system(size: 15.5, weight: .medium))
-                }
-            }
-            .frame(width: bottomSideKeyWidth, height: keyHeight)
-            .background { keySurface(isAction: true, isProminent: returnKeyIsProminent) }
-        }
-        .buttonStyle(IOSKeyboardPressStyle(isDarkMode: viewModel.isDarkMode))
-        .disabled(!viewModel.returnKeyEnabled)
-        .opacity(viewModel.returnKeyEnabled ? 1 : 0.45)
-        .foregroundStyle(returnKeyIsProminent ? .white : keyTextColor)
-        .accessibilityLabel(returnKeyTitle)
+        KeyboardKey(
+            style: KeyboardKeyStyle(
+                title: returnKeyUsesSymbol ? "" : returnKeyTitle,
+                symbolName: returnKeyUsesSymbol ? returnKeySymbol : nil,
+                font: .systemFont(ofSize: 15.5, weight: .medium),
+                symbolPointSize: 17,
+                symbolWeight: .semibold,
+                glyphColor: returnKeyIsProminent ? .white : keyTextUIColor,
+                capColor: returnKeyIsProminent ? prominentCapUIColor : actionCapUIColor,
+                pressedCapColor: returnKeyIsProminent
+                    ? prominentPressedCapUIColor
+                    : actionPressedCapUIColor,
+                isEnabled: viewModel.returnKeyEnabled,
+                isDarkMode: viewModel.isDarkMode,
+                accessibilityLabel: returnKeyTitle
+            ),
+            onTouchDown: { viewModel.triggerMediumHaptic() },
+            onTap: { viewModel.insertReturn() }
+        )
+        .frame(width: bottomSideKeyWidth)
+        .frame(height: keyHeight)
     }
 
     private var contextualShortcut: String? {
@@ -762,17 +778,6 @@ struct KeyboardView: View {
         case "%": return ["%", "‰"]
         default: return []
         }
-    }
-
-    private func paletteAlignment(for character: String) -> HorizontalAlignment {
-        let normalized = character.uppercased()
-        if keyboardLeftEdgeKeys.contains(normalized) {
-            return .leading
-        }
-        if keyboardRightEdgeKeys.contains(normalized) {
-            return .trailing
-        }
-        return .center
     }
 
     private var returnKeyTitle: String {
@@ -870,6 +875,41 @@ struct KeyboardView: View {
         viewModel.isDarkMode ? .white : .black
     }
 
+    // The UIKit keys take their colours directly, so the same palette is
+    // published once in Color and once in UIColor.
+
+    private var keyTextUIColor: UIColor {
+        viewModel.isDarkMode ? .white : .black
+    }
+
+    private var letterCapUIColor: UIColor {
+        UIColor(lightKeyBackground)
+    }
+
+    private var letterPressedCapUIColor: UIColor {
+        viewModel.isDarkMode
+            ? UIColor.white.withAlphaComponent(0.26)
+            : UIColor.black.withAlphaComponent(0.12)
+    }
+
+    private var actionCapUIColor: UIColor {
+        UIColor(darkKeyBackground)
+    }
+
+    private var actionPressedCapUIColor: UIColor {
+        viewModel.isDarkMode
+            ? UIColor.white.withAlphaComponent(0.18)
+            : UIColor.black.withAlphaComponent(0.14)
+    }
+
+    private var prominentCapUIColor: UIColor {
+        UIColor(murmurAccent)
+    }
+
+    private var prominentPressedCapUIColor: UIColor {
+        UIColor(murmurAccent).withAlphaComponent(0.82)
+    }
+
     /// Shared Liquid Glass chrome for the microphone, panel controls and other
     /// small controls, so they read as the same material as the tray.
     @ViewBuilder
@@ -892,6 +932,14 @@ struct KeyboardView: View {
     }
 }
 
+/// A control whose touch area reaches into the gap around it, so the space bar
+/// has no dead strip beside it either. Matches the key caps' hit slop.
+private final class SlopButton: UIButton {
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        bounds.insetBy(dx: -5, dy: -5).contains(point)
+    }
+}
+
 private struct SpaceInputButton: UIViewRepresentable {
     let viewModel: KeyboardViewModel
 
@@ -900,7 +948,7 @@ private struct SpaceInputButton: UIViewRepresentable {
     }
 
     func makeUIView(context: Context) -> UIButton {
-        let button = UIButton(type: .custom)
+        let button = SlopButton(type: .custom)
         button.setTitle("Murmur", for: .normal)
         // Dynamic system label colour, so the space bar follows light/dark
         // instead of being pinned to black.
@@ -910,6 +958,11 @@ private struct SpaceInputButton: UIViewRepresentable {
         button.accessibilityLabel = "Space"
         button.accessibilityHint =
             "Touch and hold, then drag to move the cursor."
+        button.addTarget(
+            context.coordinator,
+            action: #selector(Coordinator.pressSpace),
+            for: .touchDown
+        )
         button.addTarget(
             context.coordinator,
             action: #selector(Coordinator.insertSpace),
@@ -942,6 +995,10 @@ private struct SpaceInputButton: UIViewRepresentable {
 
         init(viewModel: KeyboardViewModel) {
             self.viewModel = viewModel
+        }
+
+        @objc func pressSpace() {
+            viewModel.triggerLightHaptic()
         }
 
         @objc func insertSpace() {
@@ -1017,141 +1074,6 @@ private struct InputModeSwitchButton: UIViewRepresentable {
         }
     }
 }
-
-private struct AlternateInputKey<Label: View>: View {
-    let displayText: String
-    let alternatives: [String]
-    let isDarkMode: Bool
-    let paletteAlignment: HorizontalAlignment
-    let action: (String) -> Void
-    @ViewBuilder let label: () -> Label
-
-    @State private var isPressed = false
-    @State private var showsAlternatives = false
-    @State private var longPressTask: Task<Void, Never>?
-
-    var body: some View {
-        ZStack(
-            alignment: Alignment(
-                horizontal: paletteAlignment,
-                vertical: .top
-            )
-        ) {
-            label()
-                .brightness(isPressed ? (isDarkMode ? 0.12 : -0.07) : 0)
-                .contentShape(Rectangle())
-                // A zero-distance drag reports the touch immediately, so a key
-                // never swallows a press the way a Button inside a keyboard
-                // extension sometimes does.
-                .gesture(
-                    DragGesture(minimumDistance: 0)
-                        .onChanged { _ in beginPress() }
-                        .onEnded { value in
-                            let moved = abs(value.translation.width) > 24
-                                || abs(value.translation.height) > 24
-                            endPress(commit: !moved)
-                        }
-                )
-                .background {
-                    GeometryReader { proxy in
-                        let frame = proxy.frame(in: .named(keyboardCoordinateSpace))
-                        Color.clear.preference(
-                            key: PressedKeyInfoKey.self,
-                            value: isPressed && !showsAlternatives
-                                ? PressedKeyInfo(
-                                    text: displayText,
-                                    center: CGPoint(x: frame.midX, y: frame.midY)
-                                )
-                                : nil
-                        )
-                    }
-                }
-
-            if showsAlternatives {
-                HStack(spacing: 2) {
-                    ForEach(alternatives, id: \.self) { alternative in
-                        Button {
-                            action(alternative)
-                            showsAlternatives = false
-                        } label: {
-                            Text(alternative)
-                                .font(.system(size: 20, weight: .regular))
-                                .foregroundStyle(isDarkMode ? .white : .black)
-                                .frame(minWidth: 31, minHeight: 42)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(alternative)
-                    }
-                }
-                .padding(4)
-                .background {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(isDarkMode ? Color(red: 0.26, green: 0.26, blue: 0.28) : .white)
-                }
-                .shadow(color: .black.opacity(0.25), radius: 5, y: 2)
-                .fixedSize()
-                .offset(y: -42)
-                .zIndex(100)
-            }
-        }
-        .zIndex(showsAlternatives ? 100 : 0)
-    }
-
-    private func beginPress() {
-        guard !isPressed else { return }
-        isPressed = true
-        guard !alternatives.isEmpty else { return }
-        longPressTask?.cancel()
-        longPressTask = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(0.38))
-            guard !Task.isCancelled, isPressed else { return }
-            showsAlternatives = true
-        }
-    }
-
-    private func endPress(commit: Bool) {
-        longPressTask?.cancel()
-        longPressTask = nil
-        let wasShowingAlternatives = showsAlternatives
-        isPressed = false
-        guard !wasShowingAlternatives, commit else { return }
-        action(displayText)
-    }
-}
-
-private struct IOSKeyboardPressStyle: ButtonStyle {
-    let isDarkMode: Bool
-
-    func makeBody(configuration: Configuration) -> some View {
-        // Instant, unanimated dim. No scale and no implicit animation, so a
-        // press never waits on an animation before the next key responds.
-        configuration.label
-            .brightness(
-                configuration.isPressed
-                    ? (isDarkMode ? 0.12 : -0.07)
-                    : 0
-            )
-    }
-}
-
-private struct KeyPopup: View {
-    let text: String
-    let isDarkMode: Bool
-
-    var body: some View {
-        Text(text)
-            .font(.system(size: 30, weight: .regular))
-            .foregroundStyle(isDarkMode ? .white : .black)
-            .frame(width: 48, height: 58)
-            .background {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(isDarkMode ? Color(red: 0.26, green: 0.26, blue: 0.28) : .white)
-            }
-            .shadow(color: .black.opacity(isDarkMode ? 0.45 : 0.22), radius: 4, y: 2)
-    }
-}
-
 
 // MARK: - Listening Waveform
 

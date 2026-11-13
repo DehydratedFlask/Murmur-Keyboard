@@ -265,10 +265,17 @@ final class TranscriptionService: ObservableObject {
             usePrefillCache: true,
             skipSpecialTokens: true,
             withoutTimestamps: true,
+            // Trim the tail of each window: the model most often invents
+            // "Thank you." and "Please subscribe" over the last second of
+            // mostly-silent audio.
+            windowClipTime: 1.0,
             promptTokens: promptTokens,
             suppressBlank: true,
             compressionRatioThreshold: 2.4,
             logProbThreshold: -1.0,
+            // Reject a first token the model is not confident about, which is
+            // how a hallucinated opening word over noise gets thrown away.
+            firstTokenLogProbThreshold: -1.2,
             noSpeechThreshold: 0.6,
             chunkingStrategy: .vad
         )

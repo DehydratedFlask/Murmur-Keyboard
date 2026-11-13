@@ -30,7 +30,7 @@ class KeyboardViewController: UIInputViewController {
         viewModel.showGlobeKey = needsInputModeSwitchKey
         viewModel.prepareHaptics()
         viewModel.autoCapitalize()
-        viewModel.refreshTextTraits()
+        viewModel.refreshTextTraits(interfaceStyle: traitCollection.userInterfaceStyle)
         viewModel.refreshSharedState()
 
         SharedDefaults.setKeyboardActive(true)
@@ -70,6 +70,19 @@ class KeyboardViewController: UIInputViewController {
         desiredHeight.priority = .init(999)
         desiredHeight.isActive = true
         heightConstraint = desiredHeight
+
+        // A field can report `.default` keyboard appearance even inside a dark
+        // app — Spotlight's search field does — so for those the keyboard's own
+        // trait collection decides light or dark. Keep it live while the system
+        // appearance changes.
+        if #available(iOS 17.0, *) {
+            registerForTraitChanges([UITraitUserInterfaceStyle.self]) {
+                (controller: KeyboardViewController, _: UITraitCollection) in
+                controller.viewModel.refreshTextTraits(
+                    interfaceStyle: controller.traitCollection.userInterfaceStyle
+                )
+            }
+        }
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -79,9 +92,10 @@ class KeyboardViewController: UIInputViewController {
         SharedDefaults.setFullAccessGranted(hasFullAccess)
         viewModel.showGlobeKey = needsInputModeSwitchKey
         viewModel.autoCapitalize()
-        viewModel.refreshTextTraits()
+        viewModel.refreshTextTraits(interfaceStyle: traitCollection.userInterfaceStyle)
         viewModel.restoreActiveDictationSession()
         viewModel.refreshSharedState()
+        viewModel.refreshSuggestions()
         checkForPendingText()
     }
 
@@ -91,10 +105,17 @@ class KeyboardViewController: UIInputViewController {
         viewModel.hasFullAccess = hasFullAccess
         viewModel.showGlobeKey = needsInputModeSwitchKey
         viewModel.autoCapitalize()
-        viewModel.refreshTextTraits()
+        viewModel.refreshTextTraits(interfaceStyle: traitCollection.userInterfaceStyle)
         viewModel.refreshSharedState()
         startDarwinObservers()
         startPendingTextTimer()
+
+        // Let the keyboard settle, then load the on-device spell checker while
+        // the user is reading the field rather than mid-keystroke.
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(700))
+            self?.viewModel.warmUpSpellChecker()
+        }
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -115,8 +136,17 @@ class KeyboardViewController: UIInputViewController {
     override func textDidChange(_ textInput: UITextInput?) {
         super.textDidChange(textInput)
         viewModel.textDocumentProxy = textDocumentProxy
-        viewModel.refreshTextTraits()
-        viewModel.autoCapitalize()
+
+        // One read of the field's text, shared by everything below: each proxy
+        // property is a round trip into the host app, and on a busy one those
+        // round trips are what made fast typing feel like it dropped keys.
+        let context = textDocumentProxy.documentContextBeforeInput ?? ""
+        viewModel.refreshTextTraits(
+            interfaceStyle: traitCollection.userInterfaceStyle,
+            context: context
+        )
+        viewModel.autoCapitalize(context: context)
+        viewModel.refreshSuggestions(context: context)
     }
 
     // MARK: - Pending Text Handling
@@ -239,6 +269,9 @@ final class KeyboardViewModel: ObservableObject {
     /// Briefly true right after a finished dictation is inserted, so the
     /// toolbar can confirm that the text landed.
     @Published var showsInsertionConfirmation = false
+    /// The correction the keyboard would make to the word being typed, shown
+    /// in the toolbar like Apple's prediction bar.
+    @Published var suggestions: [String] = []
     var activeSessionID: String?
     private var handoffDismissTask: Task<Void, Never>?
     private var insertionConfirmationTask: Task<Void, Never>?
@@ -251,16 +284,21 @@ final class KeyboardViewModel: ObservableObject {
     // Haptic feedback generators
     private let lightHaptic = UIImpactFeedbackGenerator(style: .light)
     private let mediumHaptic = UIImpactFeedbackGenerator(style: .medium)
+    private let selectionHaptic = UISelectionFeedbackGenerator()
 
     // Continuous backspace
     private var backspaceTimer: Timer?
     private var backspaceStartTime: Date?
     private var lastWordDeleteTime: Date?
-    private var suppressNextBackspaceTap = false
 
     // Double-space period shortcut
     private var lastSpaceTime: Date?
     private var lastShiftTapTime: Date?
+
+    /// The autocorrection that a single delete press can still undo, exactly as
+    /// Apple's keyboard restores the word you actually typed.
+    private var lastCorrection: Correction?
+    private var suggestionTask: Task<Void, Never>?
 
     /// The proxy through which the keyboard inserts/deletes text.
     var textDocumentProxy: UITextDocumentProxy?
@@ -273,6 +311,7 @@ final class KeyboardViewModel: ObservableObject {
     func prepareHaptics() {
         lightHaptic.prepare()
         mediumHaptic.prepare()
+        selectionHaptic.prepare()
     }
 
     func refreshSharedState() {
@@ -308,17 +347,36 @@ final class KeyboardViewModel: ObservableObject {
         activeSessionID = SharedDefaults.currentDictationSessionID()
     }
 
-    func refreshTextTraits() {
+    func refreshTextTraits(
+        interfaceStyle: UIUserInterfaceStyle = .unspecified,
+        context: String? = nil
+    ) {
         let newKeyboardType = textDocumentProxy?.keyboardType ?? .default
         let newReturnKeyType = textDocumentProxy?.returnKeyType ?? .default
         let newAutocapitalizationType =
             textDocumentProxy?.autocapitalizationType ?? .sentences
-        let newDarkMode = textDocumentProxy?.keyboardAppearance == .dark
         let newEnablesReturnKeyAutomatically =
             textDocumentProxy?.enablesReturnKeyAutomatically ?? false
-        let hasText = !(textDocumentProxy?.documentContextBeforeInput ?? "").isEmpty
+
+        // A field can report `.default` keyboard appearance even inside a dark
+        // app — Spotlight's search field does — and then the keyboard's own
+        // trait collection is the only honest answer. Without this the caps
+        // stayed white on the dark glass tray.
+        let newDarkMode: Bool
+        switch textDocumentProxy?.keyboardAppearance ?? .default {
+        case .dark:
+            newDarkMode = true
+        case .light:
+            newDarkMode = false
+        default:
+            newDarkMode = interfaceStyle == .unspecified
+                ? isDarkMode
+                : interfaceStyle == .dark
+        }
+
+        let documentContext = context ?? (textDocumentProxy?.documentContextBeforeInput ?? "")
         let newReturnKeyEnabled =
-            !newEnablesReturnKeyAutomatically || hasText
+            !newEnablesReturnKeyAutomatically || !documentContext.isEmpty
 
         if keyboardType != newKeyboardType { keyboardType = newKeyboardType }
         if returnKeyType != newReturnKeyType { returnKeyType = newReturnKeyType }
@@ -360,6 +418,35 @@ final class KeyboardViewModel: ObservableObject {
         isShifted || isCapsLocked
     }
 
+    /// The kind of field the user is typing into, as far as a keyboard
+    /// extension can tell: iOS exposes the keyboard type and the return key,
+    /// not the host app. Sent as the raw `DictationSurface` value, which the
+    /// app parses.
+    private var dictationSurfaceHint: String {
+        switch keyboardType {
+        case .emailAddress:
+            return "email"
+        case .webSearch, .URL:
+            return "search"
+        default:
+            switch returnKeyType {
+            case .send, .google:
+                return "chat"
+            case .search:
+                return "search"
+            default:
+                return "general"
+            }
+        }
+    }
+
+    /// A short tail of the surrounding text, capped so the formatter prompt
+    /// stays small and only ever carries what it needs.
+    private func dictationSnippet(_ text: String?) -> String? {
+        guard let text, !text.isEmpty else { return nil }
+        return String(text.suffix(200))
+    }
+
     /// Whether the recording panel replaces the key grid. A failed start keeps
     /// the panel up with a retry action rather than dropping back to an error
     /// banner the user can't act on.
@@ -374,32 +461,45 @@ final class KeyboardViewModel: ObservableObject {
 
     // MARK: - Haptics
 
+    /// The system key click always plays, as on Apple's keyboard (and obeys the
+    /// Key clicks switch in Settings › Sounds & Haptics). The extra impact is
+    /// what the Key haptics setting controls, so a silent-typing user still
+    /// hears nothing if they have muted key clicks system-wide.
     func triggerLightHaptic() {
-        guard SharedDefaults.isKeyHapticsEnabled() else { return }
         UIDevice.current.playInputClick()
-        guard hasFullAccess else { return }
+        guard SharedDefaults.isKeyHapticsEnabled(), hasFullAccess else { return }
         lightHaptic.impactOccurred()
         lightHaptic.prepare()
     }
 
     func triggerMediumHaptic() {
-        guard SharedDefaults.isKeyHapticsEnabled() else { return }
         UIDevice.current.playInputClick()
-        guard hasFullAccess else { return }
+        guard SharedDefaults.isKeyHapticsEnabled(), hasFullAccess else { return }
         mediumHaptic.impactOccurred()
         mediumHaptic.prepare()
     }
 
+    /// A light tick as the accent palette's selection moves, matching the feel
+    /// of Apple's keyboard rather than a full key press.
+    func triggerSelectionHaptic() {
+        guard SharedDefaults.isKeyHapticsEnabled(), hasFullAccess else { return }
+        selectionHaptic.selectionChanged()
+        selectionHaptic.prepare()
+    }
+
     // MARK: - Text Input
 
+    // Press feedback is fired by the keys themselves on touch-down (see
+    // KeyboardKey.swift), so nothing here clicks a second time on lift.
+
     func insertText(_ text: String) {
-        triggerLightHaptic()
         let textToInsert =
             (isUppercase || autocapitalizationType == .allCharacters)
                 ? text.uppercased()
                 : text.lowercased()
         textDocumentProxy?.insertText(textToInsert)
         lastSpaceTime = nil
+        lastCorrection = nil
 
         // Auto-unshift after typing a letter (unless caps lock)
         if isShifted &&
@@ -410,16 +510,17 @@ final class KeyboardViewModel: ObservableObject {
     }
 
     func insertCharacter(_ character: String) {
-        triggerLightHaptic()
-        if [".", ",", "!", "?", ";", ":"].contains(character) {
+        if Self.punctuationCommittingWord.contains(character) {
             autocorrectTrailingWord()
+        } else {
+            lastCorrection = nil
         }
         textDocumentProxy?.insertText(character)
         lastSpaceTime = nil
     }
 
     func insertAlternate(_ character: String) {
-        triggerLightHaptic()
+        lastCorrection = nil
         textDocumentProxy?.insertText(character)
         lastSpaceTime = nil
         if isShifted && !isCapsLocked {
@@ -428,28 +529,25 @@ final class KeyboardViewModel: ObservableObject {
     }
 
     func deleteBackward() {
-        if suppressNextBackspaceTap {
-            suppressNextBackspaceTap = false
-            return
+        if !revertLastCorrection() {
+            textDocumentProxy?.deleteBackward()
         }
-        triggerMediumHaptic()
-        textDocumentProxy?.deleteBackward()
         lastSpaceTime = nil
     }
 
     func insertSpace() {
-        triggerLightHaptic()
-
         // Double-space period shortcut (matches Apple behavior)
         let now = Date()
         let context = textDocumentProxy?.documentContextBeforeInput ?? ""
         if let last = lastSpaceTime,
            now.timeIntervalSince(last) < 0.3,
            canReplaceDoubleSpace(in: context) {
+            lastCorrection = nil
             textDocumentProxy?.deleteBackward()
             textDocumentProxy?.insertText(". ")
             lastSpaceTime = nil
             autoCapitalize()
+            refreshSuggestions()
             return
         }
 
@@ -457,63 +555,291 @@ final class KeyboardViewModel: ObservableObject {
         textDocumentProxy?.insertText(" ")
         lastSpaceTime = now
         autoCapitalize()
+        refreshSuggestions()
+    }
+
+    func insertReturn() {
+        autocorrectTrailingWord()
+        textDocumentProxy?.insertText("\n")
+        lastSpaceTime = nil
+        autoCapitalize()
+        refreshSuggestions()
     }
 
     // MARK: - Autocorrection
 
+    // Apple's contract: a word is corrected when it is *committed* — space,
+    // punctuation or return — not while it is still being typed, and one press
+    // of delete puts the original spelling back. Everything runs on-device
+    // through UITextChecker, so nothing leaves the phone.
+
     private let spellChecker = UITextChecker()
     private let spellLanguage = "en_US"
 
-    /// Replaces an obvious typo in the word before the caret with UIKit's best
-    /// guess. This uses the on-device spell checker, so no word list is bundled
-    /// and nothing leaves the device. Deliberately conservative: short words,
-    /// digits and capitalised words (usually names) are left alone.
-    private func autocorrectTrailingWord() {
-        guard let proxy = textDocumentProxy,
-              let context = proxy.documentContextBeforeInput,
-              !context.isEmpty
-        else { return }
+    private struct Correction {
+        let original: String
+        let replacement: String
+        let date: Date
+    }
 
-        let letters = context.reversed().prefix { $0.isLetter || $0 == "'" || $0 == "’" }
-        let word = String(letters.reversed())
-        guard word.count >= 3, word.count <= 24 else { return }
-        guard word.first?.isUppercase != true else { return }
+    private static let punctuationCommittingWord: Set<String> = [
+        ".", ",", "!", "?", ";", ":", ")", "]", "}",
+    ]
 
-        let range = NSRange(location: 0, length: (word as NSString).length)
-        let misspelled = spellChecker.rangeOfMisspelledWord(
-            in: word,
-            range: range,
+    /// The typos and missing apostrophes people hit most often. The spell
+    /// checker's own guess list misses several of these, and adding an
+    /// apostrophe is something it never does on its own. Only spellings that
+    /// are not words in a language Murmur can dictate in are listed here, so
+    /// typing in another language is not "corrected" into English.
+    private static let knownCorrections: [String: String] = [
+        "teh": "the", "hte": "the", "thsi": "this", "tihs": "this",
+        "thta": "that", "adn": "and", "nad": "and",
+        "jsut": "just", "juts": "just", "waht": "what", "taht": "that",
+        "yuo": "you", "yuor": "your",
+        "thier": "their", "recieve": "receive",
+        "seperate": "separate", "definately": "definitely",
+        "occured": "occurred", "untill": "until", "wich": "which",
+        "becuase": "because", "beacuse": "because", "alot": "a lot",
+        "dont": "don't", "cant": "can't", "wont": "won't", "isnt": "isn't",
+        "arent": "aren't", "wasnt": "wasn't", "werent": "weren't",
+        "didnt": "didn't", "doesnt": "doesn't", "hadnt": "hadn't",
+        "hasnt": "hasn't", "havent": "haven't", "couldnt": "couldn't",
+        "wouldnt": "wouldn't", "shouldnt": "shouldn't", "mustnt": "mustn't",
+        "ive": "I've", "youre": "you're", "youve": "you've",
+        "youll": "you'll", "theyre": "they're", "theyve": "they've",
+        "theyll": "they'll", "weve": "we've", "thats": "that's",
+        "whats": "what's",
+    ]
+
+    /// Apple does not autocorrect URL, email or web-search fields, and neither
+    /// does Murmur.
+    private var supportsCorrection: Bool {
+        switch keyboardType {
+        case .URL, .emailAddress, .webSearch, .numberPad, .decimalPad,
+             .phonePad, .namePhonePad, .asciiCapableNumberPad:
+            return false
+        default:
+            return true
+        }
+    }
+
+    /// Loads the spell checker's dictionary once, while the keyboard is sitting
+    /// open and idle, so the first correction never stalls a keystroke.
+    func warmUpSpellChecker() {
+        _ = spellChecker.rangeOfMisspelledWord(
+            in: "the",
+            range: NSRange(location: 0, length: 3),
             startingAt: 0,
-            wrap: true,
+            wrap: false,
             language: spellLanguage
         )
-        guard misspelled.location != NSNotFound,
-              let guesses = spellChecker.guesses(
-                  forWordRange: range,
-                  in: word,
-                  language: spellLanguage
-              ),
-              let best = guesses.first,
-              !best.isEmpty,
-              best.caseInsensitiveCompare(word) != .orderedSame
+    }
+
+    /// Replaces an obvious typo in the word before the caret.
+    private func autocorrectTrailingWord() {
+        lastCorrection = nil
+
+        guard supportsCorrection,
+              let proxy = textDocumentProxy,
+              let context = proxy.documentContextBeforeInput,
+              let word = Self.trailingWord(in: context),
+              let replacement = correction(for: word),
+              replacement != word
         else { return }
 
         for _ in 0..<word.count {
             proxy.deleteBackward()
         }
-        proxy.insertText(best)
+        proxy.insertText(replacement)
+        lastCorrection = Correction(
+            original: word,
+            replacement: replacement,
+            date: Date()
+        )
     }
 
-    func insertReturn() {
-        triggerMediumHaptic()
-        textDocumentProxy?.insertText("\n")
-        lastSpaceTime = nil
+    /// Apple lets a single press of delete take an autocorrection back: the
+    /// word returns to the spelling the user actually typed.
+    @discardableResult
+    private func revertLastCorrection() -> Bool {
+        guard let correction = lastCorrection else { return false }
+        lastCorrection = nil
+
+        guard Date().timeIntervalSince(correction.date) < 4,
+              let proxy = textDocumentProxy,
+              let context = proxy.documentContextBeforeInput
+        else { return false }
+
+        let hasTrailingSpace = context.hasSuffix(" ")
+        let trimmed = hasTrailingSpace ? String(context.dropLast()) : context
+        guard trimmed.hasSuffix(correction.replacement) else { return false }
+
+        for _ in 0..<correction.replacement.count {
+            proxy.deleteBackward()
+        }
+        if hasTrailingSpace {
+            proxy.deleteBackward()
+        }
+        proxy.insertText(correction.original + (hasTrailingSpace ? " " : ""))
         autoCapitalize()
+        refreshSuggestions()
+        return true
+    }
+
+    /// The corrected spelling of `word`, or nil when it looks intentional.
+    private func correction(for word: String) -> String? {
+        guard !word.isEmpty, word.count <= 24 else { return nil }
+
+        let lower = word.lowercased()
+        // "i" is the one single-letter correction every iPhone makes.
+        if lower == "i" { return "I" }
+        if let known = Self.knownCorrections[lower] {
+            return applyCase(of: word, to: known)
+        }
+
+        // Leave short words, acronyms, camelCase and non-Latin scripts alone.
+        guard word.count >= 3,
+              word.allSatisfy({ $0.isLetter || $0 == "'" || $0 == "’" }),
+              word.unicodeScalars.allSatisfy(\.isASCII),
+              !word.dropFirst().contains(where: { $0.isUppercase })
+        else { return nil }
+
+        let range = NSRange(location: 0, length: (word as NSString).length)
+        guard spellChecker.rangeOfMisspelledWord(
+            in: word,
+            range: range,
+            startingAt: 0,
+            wrap: false,
+            language: spellLanguage
+        ).location != NSNotFound else { return nil }
+
+        guard let guesses = spellChecker.guesses(
+            forWordRange: range,
+            in: word,
+            language: spellLanguage
+        ), !guesses.isEmpty else { return nil }
+
+        let limit = word.count <= 5 ? 1 : 2
+        let ranked = guesses
+            .filter { !$0.isEmpty && $0.caseInsensitiveCompare(word) != .orderedSame }
+            .map { (guess: $0, distance: editDistance(lower, $0.lowercased())) }
+            .filter { $0.distance <= limit }
+            .min { $0.distance < $1.distance }
+
+        guard let best = ranked,
+              best.guess.lowercased().first == lower.first
+        else { return nil }
+
+        return applyCase(of: word, to: best.guess)
+    }
+
+    /// Keeps the capitalisation the user typed: "Teh" corrects to "The",
+    /// "TEH" to "THE", "teh" to "the".
+    private func applyCase(of source: String, to replacement: String) -> String {
+        if source.count > 1, source == source.uppercased() {
+            return replacement.uppercased()
+        }
+        guard let first = source.first, first.isUppercase else { return replacement }
+        return replacement.prefix(1).uppercased() + String(replacement.dropFirst())
+    }
+
+    private func editDistance(_ first: String, _ second: String) -> Int {
+        let a = Array(first)
+        let b = Array(second)
+        if a.isEmpty { return b.count }
+        if b.isEmpty { return a.count }
+
+        var previous = Array(0...b.count)
+        var current = [Int](repeating: 0, count: b.count + 1)
+
+        for i in 1...a.count {
+            current[0] = i
+            for j in 1...b.count {
+                let cost = a[i - 1] == b[j - 1] ? 0 : 1
+                current[j] = min(
+                    previous[j] + 1,
+                    current[j - 1] + 1,
+                    previous[j - 1] + cost
+                )
+            }
+            swap(&previous, &current)
+        }
+        return previous[b.count]
+    }
+
+    // MARK: - Suggestions
+
+    /// The correction the keyboard would make, offered in the toolbar before it
+    /// happens. Runs after every text change like Apple's prediction bar, but a
+    /// beat later so the keystroke itself is never spent waiting on the
+    /// dictionary.
+    func refreshSuggestions(context: String? = nil) {
+        suggestionTask?.cancel()
+
+        let documentContext = context ?? (textDocumentProxy?.documentContextBeforeInput ?? "")
+        guard supportsCorrection,
+              let word = Self.trailingWord(in: documentContext),
+              word.count >= 2
+        else {
+            if !suggestions.isEmpty { suggestions = [] }
+            return
+        }
+
+        // UITextChecker is the one genuinely expensive call on this path, so it
+        // waits for a pause in typing: someone typing fast never pays for it,
+        // and the suggestion appears the moment they stop.
+        suggestionTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            self?.updateSuggestions(for: word)
+        }
+    }
+
+    private func updateSuggestions(for word: String) {
+        guard supportsCorrection,
+              let replacement = correction(for: word),
+              replacement != word
+        else {
+            if !suggestions.isEmpty { suggestions = [] }
+            return
+        }
+        if suggestions != [replacement] {
+            suggestions = [replacement]
+        }
+    }
+
+    /// Applies the offered correction immediately, the way tapping a candidate
+    /// in Apple's prediction bar does.
+    func applySuggestion(_ suggestion: String) {
+        suggestionTask?.cancel()
+        guard let proxy = textDocumentProxy,
+              let context = proxy.documentContextBeforeInput,
+              let word = Self.trailingWord(in: context)
+        else { return }
+
+        for _ in 0..<word.count {
+            proxy.deleteBackward()
+        }
+        proxy.insertText(suggestion)
+        lastCorrection = Correction(
+            original: word,
+            replacement: suggestion,
+            date: Date()
+        )
+        lastSpaceTime = nil
+        suggestions = []
+        autoCapitalize()
+    }
+
+    private static func trailingWord(in context: String) -> String? {
+        let letters = context.reversed().prefix { $0.isLetter || $0 == "'" || $0 == "’" }
+        guard !letters.isEmpty else { return nil }
+        return String(letters.reversed())
     }
 
     // MARK: - Auto-capitalization (matches Apple behavior)
 
-    func autoCapitalize() {
+    func autoCapitalize(context: String? = nil) {
         guard !isCapsLocked else { return }
 
         if autocapitalizationType == .none ||
@@ -528,17 +854,17 @@ final class KeyboardViewModel: ObservableObject {
             return
         }
 
-        let context = textDocumentProxy?.documentContextBeforeInput ?? ""
+        let documentContext = context ?? (textDocumentProxy?.documentContextBeforeInput ?? "")
         if autocapitalizationType == .words {
             let shouldShift =
-                context.isEmpty ||
-                context.last?.isWhitespace == true ||
-                context.last?.isNewline == true
+                documentContext.isEmpty ||
+                documentContext.last?.isWhitespace == true ||
+                documentContext.last?.isNewline == true
             if isShifted != shouldShift { isShifted = shouldShift }
             return
         }
 
-        let trimmed = context.trimmingCharacters(in: .whitespaces)
+        let trimmed = documentContext.trimmingCharacters(in: .whitespaces)
         let shouldShift =
             trimmed.isEmpty ||
             trimmed.hasSuffix(".") ||
@@ -554,9 +880,10 @@ final class KeyboardViewModel: ObservableObject {
 
     func startContinuousDelete() {
         stopContinuousDelete()
-        suppressNextBackspaceTap = true
         triggerMediumHaptic()
-        textDocumentProxy?.deleteBackward()
+        if !revertLastCorrection() {
+            textDocumentProxy?.deleteBackward()
+        }
         backspaceStartTime = Date()
         lastWordDeleteTime = nil
         lastSpaceTime = nil
@@ -701,6 +1028,7 @@ final class KeyboardViewModel: ObservableObject {
         self.activeSessionID = nil
         refreshSharedState()
         autoCapitalize()
+        refreshSuggestions()
         confirmInsertion()
         return true
     }
@@ -719,6 +1047,10 @@ final class KeyboardViewModel: ObservableObject {
     private func requestStop() {
         guard let activeSessionID else { return }
         triggerMediumHaptic()
+        // A pending fallback must never reopen the app now that the user has
+        // stopped; it would pull them out of whatever they were typing in.
+        warmFallbackTask?.cancel()
+        warmFallbackTask = nil
         SharedDefaults.setDictationPhase(.processing, sessionID: activeSessionID)
         SharedDefaults.requestDictationStop(sessionID: activeSessionID)
         refreshSharedState()
@@ -743,6 +1075,7 @@ final class KeyboardViewModel: ObservableObject {
         warmFallbackTask?.cancel()
 
         SharedDefaults.clearPendingText()
+        SharedDefaults.clearDictationContext()
         SharedDefaults.clearDictationSession()
         activeSessionID = nil
 
@@ -779,7 +1112,9 @@ final class KeyboardViewModel: ObservableObject {
     func dismissDictationError() {
         handoffError = nil
         warmFallbackTask?.cancel()
+        warmFallbackTask = nil
         SharedDefaults.clearPendingText()
+        SharedDefaults.clearDictationContext()
         SharedDefaults.clearDictationSession()
         SharedDefaults.setDictationRequested(false)
         activeSessionID = nil
@@ -788,6 +1123,11 @@ final class KeyboardViewModel: ObservableObject {
     }
 
     private func textForInsertion(_ text: String) -> String {
+        // The formatter decides the seam spacing when it can see the text
+        // around the cursor; never second-guess a leading space it added.
+        if text.first?.isWhitespace == true {
+            return text
+        }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty,
               let previousCharacter = textDocumentProxy?.documentContextBeforeInput?.last
@@ -813,7 +1153,21 @@ final class KeyboardViewModel: ObservableObject {
     func openMurmurForDictation() {
         guard hasFullAccess else { return }
 
+        // One fallback at a time: a timer left over from the previous request
+        // could otherwise reopen the app while this one is already recording.
+        warmFallbackTask?.cancel()
+        warmFallbackTask = nil
+
         suppressesAbandonmentNotice = false
+
+        // Hand the formatter the two things only the keyboard knows: which
+        // kind of field this is, and the text around the cursor.
+        SharedDefaults.setDictationContext(
+            surface: dictationSurfaceHint,
+            before: dictationSnippet(textDocumentProxy?.documentContextBeforeInput),
+            after: dictationSnippet(textDocumentProxy?.documentContextAfterInput)
+        )
+
         let sessionID = UUID().uuidString
         activeSessionID = sessionID
         SharedDefaults.beginDictationSession(sessionID: sessionID)
@@ -845,7 +1199,13 @@ final class KeyboardViewModel: ObservableObject {
             try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled else { return }
             guard activeSessionID == sessionID else { return }
-            guard SharedDefaults.dictationState().phase != .recording else { return }
+            // Only step in when the app still has not begun recording. A
+            // session that already moved on to processing (the user stopped
+            // before this fired) must never be reopened.
+            let phase = SharedDefaults.dictationState().phase
+            guard phase == .idle || phase == .preparing || phase == .failed else {
+                return
+            }
             guard let url = URL(string: "murmur://dictate") else { return }
             openContainingApp(url)
         }

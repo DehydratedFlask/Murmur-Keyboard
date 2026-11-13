@@ -383,6 +383,60 @@ enum SharedDefaults {
     static func isFullAccessGranted() -> Bool {
         suite.bool(forKey: fullAccessKey)
     }
+
+    // MARK: - Formatting Context
+
+    private static let dictationSurfaceKey = "dictationSurfaceHint"
+    private static let dictationContextBeforeKey = "dictationContextBefore"
+    private static let dictationContextAfterKey = "dictationContextAfter"
+
+    /// Records the kind of field a dictation started from, plus the text on
+    /// either side of the cursor, so the formatter can shape the result for the
+    /// surface (a chat reply reads differently from an email) and join an
+    /// existing sentence cleanly — the iOS version of the context Amical reads
+    /// from the active app. The surface travels as a raw string because the
+    /// keyboard extension and the app keep separate copies of the type.
+    static func setDictationContext(
+        surface: String,
+        before: String?,
+        after: String?
+    ) {
+        suite.set(surface, forKey: dictationSurfaceKey)
+        if let before, !before.isEmpty {
+            suite.set(before, forKey: dictationContextBeforeKey)
+        } else {
+            suite.removeObject(forKey: dictationContextBeforeKey)
+        }
+        if let after, !after.isEmpty {
+            suite.set(after, forKey: dictationContextAfterKey)
+        } else {
+            suite.removeObject(forKey: dictationContextAfterKey)
+        }
+    }
+
+    /// Drops a context that will never be used — a cancelled dictation must not
+    /// shape the next one.
+    static func clearDictationContext() {
+        suite.removeObject(forKey: dictationSurfaceKey)
+        suite.removeObject(forKey: dictationContextBeforeKey)
+        suite.removeObject(forKey: dictationContextAfterKey)
+    }
+
+    /// Reads the context and clears it, so a hint never leaks into the next
+    /// dictation and the before/after text is only sent once.
+    static func consumeDictationContext() -> (
+        surface: String?,
+        before: String?,
+        after: String?
+    ) {
+        let surface = suite.string(forKey: dictationSurfaceKey)
+        let before = suite.string(forKey: dictationContextBeforeKey)
+        let after = suite.string(forKey: dictationContextAfterKey)
+
+        clearDictationContext()
+
+        return (surface, before, after)
+    }
 }
 
 struct PendingTextPayload: Sendable {

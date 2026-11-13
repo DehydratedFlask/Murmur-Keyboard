@@ -1055,13 +1055,7 @@ struct ContentView: View {
     }
 
     private func presentError(_ rawMessage: String) {
-        let friendlyMessage: String
-        switch rawMessage {
-        case "Audio device disconnected":
-            friendlyMessage = "Recording interrupted. Please try again."
-        default:
-            friendlyMessage = rawMessage
-        }
+        let friendlyMessage = saneErrorText(rawMessage)
 
         errorDismissTask?.cancel()
         errorMessage = friendlyMessage
@@ -1070,6 +1064,31 @@ struct ContentView: View {
             guard !Task.isCancelled, errorMessage == friendlyMessage else { return }
             errorMessage = nil
         }
+    }
+
+    /// Raw system error text such as "The operation couldn't be completed.
+    /// (Swift.CancellationError error 1.)" tells the user nothing and is never
+    /// worth showing. Anything we cannot make meaningful gets the one message
+    /// the user can actually act on.
+    private func saneErrorText(_ raw: String) -> String {
+        let lowered = raw.lowercased()
+        if lowered.contains("cancellation")
+            || lowered.contains("the operation couldn")
+            || lowered.contains("required condition is false")
+            || lowered.contains("osstatus")
+            || lowered.contains("error 1") {
+            return NSLocalizedString(
+                "Couldn't start the microphone. Please try again.",
+                comment: "Fallback message for an unfriendly audio error"
+            )
+        }
+        if raw == "Audio device disconnected" {
+            return NSLocalizedString(
+                "Recording interrupted. Please try again.",
+                comment: "Audio route lost mid-recording"
+            )
+        }
+        return raw
     }
 
     private func clearErrorMessage() {
@@ -1157,14 +1176,21 @@ struct ContentView: View {
                     stopAndTranscribe()
                 }
             }
+        } catch is CancellationError {
+            // A newer dictation request replaced this one — most often right
+            // after stopping and starting again. Nothing failed, so nothing to
+            // report: the previous session must not be marked abandoned either,
+            // because the keyboard already owns a fresh session.
+            return
         } catch {
             if case RecordingError.noPermission = error {
                 showMicPermissionAlert = recorder.permissionDenied
             }
+            let message = saneErrorText(error.localizedDescription)
             if isDictationFromKeyboard {
-                signalKeyboardDictationAbandoned(reason: error.localizedDescription)
+                signalKeyboardDictationAbandoned(reason: message)
             }
-            presentError(error.localizedDescription)
+            presentError(message)
         }
     }
 
@@ -1246,25 +1272,72 @@ struct ContentView: View {
                 )
             }
             do {
+                // Whisper does not return nothing when it hears silence or a
+                // steady fan — it invents whole sentences, and those invented
+                // words are the "extra words" in a transcript. Hand it only the
+                // stretches that contain a voice, the way Amical's VAD filter
+                // does before its local model.
+                let scan = await SpeechSegmenter.scan(audioURL)
+                if let scan, !scan.hasSpeech {
+                    if isDictationFromKeyboard {
+                        signalKeyboardDictationAbandoned(
+                            reason: NSLocalizedString(
+                                "No speech was detected. Please try again.",
+                                comment: "Keyboard dictation found no speech"
+                            )
+                        )
+                    }
+                    presentError(
+                        NSLocalizedString(
+                            "No speech was detected. Please try again.",
+                            comment: "Recording contained no speech"
+                        )
+                    )
+                    return
+                }
+                // A scan that could not read the file must never eat the
+                // recording: transcribe the original instead.
+                let transcriptionURL = scan?.audioURL ?? audioURL
+                defer {
+                    if transcriptionURL != audioURL {
+                        try? FileManager.default.removeItem(at: transcriptionURL)
+                    }
+                }
+
                 var rawText: String
                 var didFallback = false
 
                 if useCloud {
                     do {
-                        rawText = try await CloudTranscriptionService.transcribe(audioURL: audioURL)
+                        rawText = try await CloudTranscriptionService.transcribe(audioURL: transcriptionURL)
                     } catch {
                         // Cloud failed — fall back to local WhisperKit
                         print("[Murmur] Cloud transcription failed: \(error.localizedDescription). Falling back to on-device.")
-                        rawText = try await transcriptionService.transcribe(audioURL: audioURL)
+                        rawText = try await transcriptionService.transcribe(audioURL: transcriptionURL)
                         didFallback = true
                     }
                 } else {
-                    rawText = try await transcriptionService.transcribe(audioURL: audioURL)
+                    rawText = try await transcriptionService.transcribe(audioURL: transcriptionURL)
                 }
+
+                // The keyboard recorded which field this dictation started from
+                // and the text around the cursor; the formatter uses it to
+                // shape the result for that surface and to join an existing
+                // sentence — Amical's context awareness, with the context a
+                // keyboard extension can actually see.
+                let hint = SharedDefaults.consumeDictationContext()
+                let configured = MurmurPreferences.formattingSurface
+                let detected = hint.surface.flatMap(DictationSurface.init(rawValue:))
+                let surface = configured == .automatic
+                    ? (detected ?? .general)
+                    : configured
 
                 let polished = await TranscriptCleanupService.process(
                     rawText,
-                    useFoundationModel: MurmurPreferences.aiCleanupEnabled
+                    useFoundationModel: MurmurPreferences.aiCleanupEnabled,
+                    surface: surface,
+                    contextBefore: hint.before,
+                    contextAfter: hint.after
                 )
                 let cleanedText = SnippetStore.apply(snippetStore.snippets, to: polished)
 
@@ -1346,7 +1419,7 @@ struct ContentView: View {
 
     private func signalKeyboardDictationAbandoned(reason: String) {
         MurmurDictationLiveActivity.end()
-        SharedDefaults.abandonDictationSession(reason: reason)
+        SharedDefaults.abandonDictationSession(reason: saneErrorText(reason))
         SharedDefaults.setDictationRequested(false)
         keyboardCompletionMessage = nil
         isDictationFromKeyboard = false
@@ -1475,6 +1548,7 @@ struct SettingsView: View {
     @AppStorage("dictationSessionDuration") private var sessionDurationRaw = DictationSessionDuration.fiveMinutes.rawValue
     @AppStorage("historyRetentionDays") private var historyRetentionRaw = 14
     @AppStorage("aiCleanupEnabled") private var aiCleanupEnabled = true
+    @AppStorage("formattingSurface") private var formattingSurfaceRaw = DictationSurface.automatic.rawValue
     @State private var keyHapticsEnabled = SharedDefaults.isKeyHapticsEnabled()
     @StateObject private var snippetStore = SnippetStore()
     @State private var selectedLanguageCodes: [String] = MurmurPreferences.selectedLanguageCodes
@@ -1528,7 +1602,7 @@ struct SettingsView: View {
             return "Apple Intelligence isn't available on this device, so Murmur uses its built-in cleanup for punctuation and capitalization."
         }
         if aiCleanupEnabled {
-            return "Adds punctuation, capitalization and paragraph breaks on-device with Apple's model. It formats only — rewriting, summarizing and new facts are rejected."
+            return "Removes filler words and restructures what you said into clean sentences on-device with Apple's model, shaped for the field you are typing in. It never adds facts, summarizes or answers — only formats what you spoke."
         }
         return "Off: Murmur uses its built-in punctuation cleanup. Turn this on to have Apple's on-device model format your dictation as written prose."
     }
@@ -1635,6 +1709,17 @@ struct SettingsView: View {
                         icon: "wand.and.stars",
                         color: .pink,
                         title: "Apple Intelligence cleanup"
+                    )
+                }
+
+                NavigationLink {
+                    FormattingSurfaceView()
+                } label: {
+                    settingsRow(
+                        icon: "text.alignleft",
+                        color: .purple,
+                        title: "Formatting style",
+                        value: DictationSurface(rawValue: formattingSurfaceRaw)?.title ?? "Automatic"
                     )
                 }
             } header: {
@@ -2645,5 +2730,54 @@ private struct HistoryRetentionView: View {
         } message: {
             Text("This removes every transcription and resets your lifetime word total.")
         }
+    }
+}
+
+// MARK: - Formatting Surface
+
+/// Picks the shape the formatter gives dictated text. Automatic follows the
+/// field the keyboard was in, which is what Amical does by reading the active
+/// app; the explicit styles force one shape everywhere.
+private struct FormattingSurfaceView: View {
+    @AppStorage("formattingSurface") private var surfaceRaw = DictationSurface.automatic.rawValue
+
+    private var selected: DictationSurface {
+        DictationSurface(rawValue: surfaceRaw) ?? .automatic
+    }
+
+    var body: some View {
+        List {
+            Section {
+                ForEach(DictationSurface.allCases) { option in
+                    Button {
+                        surfaceRaw = option.rawValue
+                    } label: {
+                        HStack(alignment: .top, spacing: 12) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(option.title)
+                                    .foregroundStyle(.primary)
+                                Text(option.detail)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer(minLength: 0)
+                            if option == selected {
+                                Image(systemName: "checkmark")
+                                    .font(.body.weight(.semibold))
+                                    .foregroundStyle(murmurAccent)
+                            }
+                        }
+                        .padding(.vertical, 3)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            } footer: {
+                Text("Automatic reads the kind of field you are typing in — a message field gets a chat reply, an email field keeps its greeting. Picking a style always formats that way, including dictation started from the Murmur app.")
+            }
+        }
+        .navigationTitle("Formatting style")
+        .navigationBarTitleDisplayMode(.inline)
+        .tint(murmurAccent)
     }
 }

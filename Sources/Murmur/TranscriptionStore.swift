@@ -277,6 +277,19 @@ enum MurmurPreferences {
         if autoDetectLanguage { return nil }
         return selectedLanguageCodes.first
     }
+
+    static let formattingSurfaceKey = "formattingSurface"
+
+    /// How dictated text is shaped. `.automatic` follows the field the keyboard
+    /// was in; any other value is the user's explicit choice.
+    static var formattingSurface: DictationSurface {
+        get {
+            UserDefaults.standard
+                .string(forKey: formattingSurfaceKey)
+                .flatMap(DictationSurface.init(rawValue:)) ?? .automatic
+        }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: formattingSurfaceKey) }
+    }
 }
 
 // MARK: - Session duration

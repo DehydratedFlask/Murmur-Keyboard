@@ -218,6 +218,12 @@ final class AudioRecorder: ObservableObject {
     /// Starts recording audio. Audio-session activation is performed away from
     /// the main actor because iOS 27 reports synchronous activation on the UI
     /// thread as a hang risk and may abort the process in Simulator.
+    ///
+    /// Starting fails often enough in real use — the previous dictation's
+    /// session still releasing, a call or another app holding the microphone, a
+    /// route change — that a single failed attempt is not worth bothering the
+    /// user with. The whole audio stack is torn down and rebuilt before one more
+    /// attempt, which is what the old "Try again" did by hand.
     func startRecording() async throws {
         guard !isRecording, !isStarting else { return }
         isStarting = true
@@ -235,11 +241,32 @@ final class AudioRecorder: ObservableObject {
             throw RecordingError.noPermission
         }
 
-        do {
-            audioSessionGeneration = try await Self.activateAudioSessionWithRetry()
-        } catch {
-            throw RecordingError.engineStartFailed
+        var lastError: Error?
+        for attempt in 0..<2 {
+            do {
+                try await startEngine()
+                return
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                lastError = error
+            }
+
+            // Release everything and give iOS a moment to hand the input back.
+            audioSessionGeneration = nil
+            await Self.deactivateAudioSession(generation: nil)
+            if attempt == 0 {
+                try? await Task.sleep(for: .milliseconds(300))
+            }
         }
+
+        throw (lastError as? RecordingError) ?? RecordingError.engineStartFailed
+    }
+
+    /// One attempt at activating the session, wiring the input tap and starting
+    /// the engine. Cleans up after itself on failure.
+    private func startEngine() async throws {
+        audioSessionGeneration = try await Self.activateAudioSessionWithRetry()
 
         let engine = AVAudioEngine()
         var temporaryURL: URL?
@@ -313,10 +340,9 @@ final class AudioRecorder: ObservableObject {
                 engine.inputNode.removeTap(onBus: 0)
             }
             engine.stop()
-            await Self.deactivateAudioSession(
-                generation: audioSessionGeneration
-            )
+            let generation = audioSessionGeneration
             audioSessionGeneration = nil
+            await Self.deactivateAudioSession(generation: generation)
             if let temporaryURL {
                 try? FileManager.default.removeItem(at: temporaryURL)
             }
